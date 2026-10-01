@@ -4,36 +4,99 @@ import android.app.Activity
 import android.os.Bundle
 import android.content.Context
 import android.net.ConnectivityManager
+import android.view.View
 import android.widget.*
 import java.net.Inet4Address
 import java.net.InetAddress
 import java.util.concurrent.Executors
 
-data class Dev(val ip:String,val host:String,val up:Boolean,val ms:Long,val type:String)
+data class Dev(
+    val ip:String,
+    val host:String,
+    val up:Boolean,
+    val ms:Long,
+    val type:String,
+    var change:String=""
+)
 
 class MainActivity:Activity(){
     private lateinit var subnet:EditText
-    private lateinit var list:ListView
+    private lateinit var filter:Spinner
     private lateinit var counts:TextView
+    private lateinit var tabHost:TabHost
+    private val lists=linkedMapOf<String,ListView>()
     private var devs=listOf<Dev>()
     private var before=listOf<Dev>()
+    private var compareMode=false
     private val pool=Executors.newFixedThreadPool(32)
 
     override fun onCreate(b:Bundle?){
         super.onCreate(b)
+
         val root=LinearLayout(this).apply{orientation=LinearLayout.VERTICAL}
         subnet=EditText(this).apply{setText("192.168.1.0/24")}
-        val row=LinearLayout(this)
+
+        val row1=HorizontalScrollView(this)
+        val buttons=LinearLayout(this).apply{orientation=LinearLayout.HORIZONTAL}
         fun button(t:String,f:()->Unit)=Button(this).apply{text=t;setOnClickListener{f()}}
-        row.addView(button("Current Subnet"){subnet.setText(currentSubnet())})
-        row.addView(button("Scan"){scan()})
-        row.addView(button("Set Before"){before=devs;Toast.makeText(this,"Baseline saved",Toast.LENGTH_SHORT).show()})
-        row.addView(button("Compare"){show(true)})
-        counts=TextView(this)
-        list=ListView(this)
-        root.addView(subnet);root.addView(row);root.addView(counts)
-        root.addView(list,LinearLayout.LayoutParams(-1,0,1f))
+        buttons.addView(button("Current Subnet"){subnet.setText(currentSubnet())})
+        buttons.addView(button("Scan Now"){scan()})
+        buttons.addView(button("Set Before"){
+            before=devs.map{it.copy()}
+            compareMode=false
+            renderAll()
+            Toast.makeText(this,"Baseline saved",Toast.LENGTH_SHORT).show()
+        })
+        buttons.addView(button("Compare"){
+            compareMode=true
+            renderAll()
+            tabHost.currentTabByTag="changes"
+        })
+        row1.addView(buttons)
+
+        val filterRow=LinearLayout(this).apply{orientation=LinearLayout.HORIZONTAL}
+        filterRow.addView(TextView(this).apply{text="Show: ";setPadding(12,16,8,0)})
+        filter=Spinner(this)
+        val filterItems=listOf("All","Pingable","No Ping")
+        filter.adapter=ArrayAdapter(this,android.R.layout.simple_spinner_dropdown_item,filterItems)
+        filter.onItemSelectedListener=object:android.widget.AdapterView.OnItemSelectedListener{
+            override fun onItemSelected(parent:android.widget.AdapterView<*>?,view:View?,position:Int,id:Long){renderAll()}
+            override fun onNothingSelected(parent:android.widget.AdapterView<*>?){}
+        }
+        filterRow.addView(filter)
+
+        counts=TextView(this).apply{setPadding(12,10,12,10)}
+
+        tabHost=TabHost(this)
+        val tabLayout=LinearLayout(this).apply{orientation=LinearLayout.VERTICAL}
+        val tabWidget=TabWidget(this).apply{id=android.R.id.tabs}
+        val content=FrameLayout(this).apply{id=android.R.id.tabcontent}
+        tabLayout.addView(tabWidget,LinearLayout.LayoutParams(-1,-2))
+        tabLayout.addView(content,LinearLayout.LayoutParams(-1,0,1f))
+        tabHost.addView(tabLayout)
+        tabHost.setup()
+
+        addTab(content,"all","All")
+        addTab(content,"aps","APs")
+        addTab(content,"pcs","PCs")
+        addTab(content,"other","Other")
+        addTab(content,"unknown","Unknown")
+        addTab(content,"changes","Missing/Changed")
+
+        root.addView(subnet)
+        root.addView(row1)
+        root.addView(filterRow)
+        root.addView(counts)
+        root.addView(tabHost,LinearLayout.LayoutParams(-1,0,1f))
         setContentView(root)
+    }
+
+    private fun addTab(content:FrameLayout,tag:String,label:String){
+        val lv=ListView(this)
+        lv.id=View.generateViewId()
+        content.addView(lv,FrameLayout.LayoutParams(-1,-1))
+        lists[tag]=lv
+        tabHost.addTab(tabHost.newTabSpec(tag).setIndicator(label).setContent(lv.id))
     }
 
     private fun currentSubnet():String{
@@ -57,9 +120,16 @@ class MainActivity:Activity(){
 
     private fun scan(){
         val parts=subnet.text.toString().trim().split("/")
-        if(parts.size!=2){Toast.makeText(this,"Enter subnet like 10.1.2.0/24",Toast.LENGTH_SHORT).show();return}
+        if(parts.size!=2){
+            Toast.makeText(this,"Enter subnet like 10.1.2.0/24",Toast.LENGTH_SHORT).show()
+            return
+        }
         val prefix=parts[1].toIntOrNull()?:return
-        if(prefix !in 16..30){Toast.makeText(this,"Use /16 through /30",Toast.LENGTH_SHORT).show();return}
+        if(prefix !in 16..30){
+            Toast.makeText(this,"Use /16 through /30",Toast.LENGTH_SHORT).show()
+            return
+        }
+
         val b=InetAddress.getByName(parts[0]).address.map{it.toInt() and 255}
         val value=(b[0].toLong() shl 24) or (b[1].toLong() shl 16) or (b[2].toLong() shl 8) or b[3].toLong()
         val mask=(0xffffffffL shl (32-prefix)) and 0xffffffffL
@@ -67,6 +137,7 @@ class MainActivity:Activity(){
         val maxHosts=minOf((1L shl (32-prefix))-2,4094)
         val out=java.util.Collections.synchronizedList(mutableListOf<Dev>())
         counts.text="Scanning..."
+
         Thread{
             val futures=(1L..maxHosts).map{i->
                 pool.submit{
@@ -81,28 +152,77 @@ class MainActivity:Activity(){
                 }
             }
             futures.forEach{it.get()}
-            devs=out.sortedBy{it.ip}
-            runOnUiThread{show(false)}
+            devs=out.sortedWith(compareBy{ipNumber(it.ip)})
+            compareMode=false
+            runOnUiThread{renderAll()}
         }.start()
+    }
+
+    private fun ipNumber(ip:String):Long{
+        val p=ip.split(".").map{it.toLong()}
+        return (p[0] shl 24) or (p[1] shl 16) or (p[2] shl 8) or p[3]
     }
 
     private fun classify(host:String):String{
         val h=host.lowercase()
         return when{
-            h.contains("aruba")||h.contains("cisco")||h.startsWith("ap")->"Access Point"
-            h.contains("pc")||h.contains("desktop")||h.contains("laptop")->"PC / Desktop"
+            h.contains("aruba")||h.contains("cisco")||h.startsWith("ap-")||h.startsWith("ap")->"Access Point"
+            h.contains("desktop")||h.contains("laptop")||h.contains("workstation")||h.contains("pc-")->"PC / Desktop"
+            h.contains("printer")||h.contains("xerox")||h.contains("canon")||h.contains("brother")||
+            h.contains("camera")||h.contains("phone")||h.contains("iphone")||h.contains("android")||
+            h.contains("switch")||h.contains("router")||h.contains("gateway")||h.contains("lantronix")->"Other Device"
             else->"Unknown"
         }
     }
 
-    private fun show(compare:Boolean){
-        val old=before.associateBy{it.ip}
-        val lines=devs.filter{it.up}.map{d->
-            val change=if(compare&&!old.containsKey(d.ip))" NEW" else""
-            d.ip+"  "+d.host+"  "+d.type+"  "+d.ms+"ms"+change
-        }.toMutableList()
-        if(compare)lines.addAll(before.filter{it.up&&!devs.any{n->n.ip==it.ip&&n.up}}.map{it.ip+"  "+it.host+"  MISSING"})
-        list.adapter=ArrayAdapter(this,android.R.layout.simple_list_item_1,lines)
-        counts.text="Pingable "+devs.count{it.up}+" | AP "+devs.count{it.up&&it.type=="Access Point"}+" | Unknown "+devs.count{it.up&&it.type=="Unknown"}+" | No Ping "+devs.count{!it.up}
+    private fun buildRows():MutableList<Dev>{
+        val rows=devs.map{it.copy(change="")}.toMutableList()
+        if(compareMode){
+            val old=before.associateBy{it.ip}
+            for(d in rows){
+                if(d.up&&!old.containsKey(d.ip))d.change="NEW"
+                else if(d.up&&old.containsKey(d.ip)&&old[d.ip]?.host!=d.host)d.change="CHANGED"
+            }
+            rows.addAll(before.filter{it.up&&!devs.any{n->n.ip==it.ip&&n.up}}.map{it.copy(up=false,change="MISSING")})
+        }
+        return rows
+    }
+
+    private fun statusFilter(rows:List<Dev>):List<Dev>{
+        return when(filter.selectedItem?.toString()?:"All"){
+            "Pingable"->rows.filter{it.up}
+            "No Ping"->rows.filter{!it.up}
+            else->rows
+        }
+    }
+
+    private fun renderAll(){
+        if(!::filter.isInitialized||!::tabHost.isInitialized)return
+        val all=buildRows()
+        setList("all",statusFilter(all))
+        setList("aps",statusFilter(all.filter{it.type=="Access Point"}))
+        setList("pcs",statusFilter(all.filter{it.type=="PC / Desktop"}))
+        setList("other",statusFilter(all.filter{it.type=="Other Device"}))
+        setList("unknown",statusFilter(all.filter{it.type=="Unknown"}))
+        setList("changes",statusFilter(all.filter{it.change.isNotEmpty()}))
+
+        val ping=devs.count{it.up}
+        val aps=devs.count{it.up&&it.type=="Access Point"}
+        val pcs=devs.count{it.up&&it.type=="PC / Desktop"}
+        val other=devs.count{it.up&&it.type=="Other Device"}
+        val unknown=devs.count{it.up&&it.type=="Unknown"}
+        val noPing=devs.count{!it.up}
+        counts.text="Pingable "+ping+" | AP "+aps+" | PC "+pcs+" | Other "+other+" | Unknown "+unknown+" | No Ping "+noPing
+    }
+
+    private fun setList(tag:String,rows:List<Dev>){
+        val lines=rows.map{d->
+            val state=if(d.up)"UP" else if(d.change=="MISSING")"MISSING" else "NO PING"
+            val latency=if(d.ms>=0)d.ms.toString()+"ms" else ""
+            var s=d.ip+"  "+state+"  "+d.host+"  "+d.type+"  "+latency
+            if(d.change.isNotEmpty())s=s+"  "+d.change
+            s
+        }
+        lists[tag]?.adapter=ArrayAdapter(this,android.R.layout.simple_list_item_1,lines)
     }
 }
