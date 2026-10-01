@@ -216,13 +216,20 @@ class MainActivity:Activity(){
     }
 
     private fun setList(tag:String,rows:List<Dev>){
-        val lines=rows.map{d->
-            val state=if(d.up)"UP" else if(d.change=="MISSING")"MISSING" else "NO PING"
-            val latency=if(d.ms>=0)d.ms.toString()+"ms" else ""
-            var s=d.ip+"  "+state+"  "+d.host+"  "+d.type+"  "+latency
-            if(d.change.isNotEmpty())s=s+"  "+d.change
-            s
+        lists[tag]?.adapter=object:ArrayAdapter<Dev>(this,android.R.layout.simple_list_item_1,rows){
+            override fun getView(position:Int,convertView:android.view.View?,parent:android.view.ViewGroup):android.view.View{
+                val view=super.getView(position,convertView,parent)
+                val d=getItem(position)!!
+                val text=view.findViewById<TextView>(android.R.id.text1)
+                val state=if(d.up)"UP" else if(d.change=="MISSING")"MISSING" else "NO PING"
+                val latency=if(d.ms>=0)d.ms.toString()+"ms" else ""
+                var s=d.ip+"  "+state+"  "+d.host+"  "+d.type+"  "+latency
+                if(d.change.isNotEmpty())s=s+"  "+d.change
+                text.text=s
+                text.setTextColor(if(d.up)0xff0b3d0b.toInt() else 0xff8b0000.toInt())
+                view.setBackgroundColor(if(d.up)0xffc8f7c5.toInt() else 0xffffd6d6.toInt())
+                return view
+            }
         }
-        lists[tag]?.adapter=ArrayAdapter(this,android.R.layout.simple_list_item_1,lines)
     }
 }
