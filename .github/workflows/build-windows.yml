@@ -14,5 +14,5 @@ jobs:
       - run: dotnet publish Pings.Windows/Pings.Windows.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true
       - uses: actions/upload-artifact@v4
         with:
-          name: Pings-Windows-v0.4
+          name: Pings-Windows-v0.5
           path: Pings.Windows/bin/Release/net8.0-windows/win-x64/publish/Pings.exe
