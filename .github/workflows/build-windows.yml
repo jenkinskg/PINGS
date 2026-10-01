@@ -1,0 +1,18 @@
+name: Build Windows EXE
+on:
+  workflow_dispatch:
+  push:
+    paths: ['Pings.Windows/**','.github/workflows/build-windows.yml']
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - run: dotnet publish Pings.Windows/Pings.Windows.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Pings-Windows-v0.3
+          path: Pings.Windows/bin/Release/net8.0-windows/win-x64/publish/Pings.exe
