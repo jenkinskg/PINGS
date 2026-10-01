@@ -48,6 +48,7 @@ class MainActivity:Activity(){
     private val pool=Executors.newFixedThreadPool(32)
     private val handler=Handler(Looper.getMainLooper())
     private var repeatMs=0L
+    private val prefs by lazy { getSharedPreferences("device_classifications", Context.MODE_PRIVATE) }
 
     private val repeatTask=object:Runnable{
         override fun run(){
@@ -80,7 +81,7 @@ class MainActivity:Activity(){
             setTextColor(Color.rgb(35,49,66))
         })
         header.addView(TextView(this).apply{
-            text="Network Availability Monitor"
+            text="Network Availability Monitor • v0.7"
             textSize=12f
             setTextColor(Color.rgb(105,115,126))
         })
@@ -121,7 +122,7 @@ class MainActivity:Activity(){
         buttons.addView(actionButton("Compare Before/After"){
             compareMode=true
             renderAll()
-            tabHost.currentTabByTag="changes"
+            tabHost.currentTab=6
         },buttonLp())
         actionScroll.addView(buttons)
 
@@ -165,9 +166,9 @@ class MainActivity:Activity(){
         apBtn=countButton("APs: 0",Color.rgb(43,94,154))
         nonApBtn=countButton("Non-APs: 0",Color.rgb(89,100,114))
         noPingBtn=countButton("Not Responding: 0",Color.rgb(166,55,55))
-        pingBtn.setOnClickListener{filter.setSelection(1);tabHost.currentTabByTag="all"}
-        apBtn.setOnClickListener{filter.setSelection(1);tabHost.currentTabByTag="aps"}
-        nonApBtn.setOnClickListener{filter.setSelection(1);tabHost.currentTabByTag="nonaps"}
+        pingBtn.setOnClickListener{filter.setSelection(1);tabHost.currentTab=0}
+        apBtn.setOnClickListener{filter.setSelection(1);tabHost.currentTab=1}
+        nonApBtn.setOnClickListener{filter.setSelection(1);tabHost.currentTab=2}
         noPingBtn.setOnClickListener{filter.setSelection(2);tabHost.currentTabByTag="all"}
         countRow.addView(pingBtn,buttonLp())
         countRow.addView(apBtn,buttonLp())
@@ -189,7 +190,7 @@ class MainActivity:Activity(){
         val tabLayout=LinearLayout(this).apply{orientation=LinearLayout.VERTICAL}
         val tabScroll=HorizontalScrollView(this).apply{isHorizontalScrollBarEnabled=false}
         val tabWidget=TabWidget(this).apply{id=android.R.id.tabs}
-        tabScroll.addView(tabWidget,HorizontalScrollView.LayoutParams(-2,-2))
+        tabScroll.addView(tabWidget,ViewGroup.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT,ViewGroup.LayoutParams.WRAP_CONTENT))
         val content=FrameLayout(this).apply{
             id=android.R.id.tabcontent
             setBackgroundColor(Color.WHITE)
@@ -353,8 +354,13 @@ class MainActivity:Activity(){
                     val up=try{InetAddress.getByName(ip).isReachable(700)}catch(_:Exception){false}
                     val host=if(up)try{InetAddress.getByName(ip).canonicalHostName}catch(_:Exception){""}else""
                     val mac=if(up)macForIp(ip)else""
-                    val vendor=vendorFromMac(mac)
-                    val type=classify(host,vendor)
+                    var vendor=vendorFromMac(mac)
+                    var type=classify(host,vendor)
+                    val manual=getOverride(ip,host,mac)
+                    if(manual!=null){
+                        vendor=manual.first
+                        type=manual.second
+                    }
                     val ms=if(up)System.currentTimeMillis()-started else -1L
                     out.add(Dev(ip,host,mac,vendor,up,ms,type))
                 }
@@ -375,7 +381,7 @@ class MainActivity:Activity(){
         try{
             val f=File("/proc/net/arp")
             if(!f.exists())return ""
-            f.forEachLine{line->
+            for(line in f.readLines()){
                 val parts=line.trim().split(Regex("\\s+"))
                 if(parts.size>=4&&parts[0]==ip){
                     val mac=parts[3].uppercase()
@@ -384,6 +390,67 @@ class MainActivity:Activity(){
             }
         }catch(_:Exception){}
         return ""
+    }
+
+    private fun candidateKeys(ip:String,host:String,mac:String):List<String>{
+        val out=mutableListOf<String>()
+        if(mac.isNotBlank())out.add("mac:"+mac.replace(":","").replace("-","").uppercase())
+        if(host.isNotBlank())out.add("host:"+host.trim().lowercase())
+        if(ip.isNotBlank())out.add("ip:"+ip.trim())
+        return out
+    }
+
+    private fun getOverride(ip:String,host:String,mac:String):Pair<String,String>?{
+        for(key in candidateKeys(ip,host,mac)){
+            val raw=prefs.getString(key,null)?:continue
+            val parts=raw.split("|",limit=2)
+            if(parts.size==2)return Pair(parts[0],parts[1])
+        }
+        return null
+    }
+
+    private fun saveOverride(d:Dev,vendor:String,type:String){
+        val key=candidateKeys(d.ip,d.host,d.mac).firstOrNull()?:return
+        prefs.edit().putString(key,vendor+"|"+type).apply()
+        devs=devs.map{
+            if(it.ip==d.ip)it.copy(vendor=vendor,type=type) else it
+        }
+        renderAll()
+    }
+
+    private fun clearOverride(d:Dev){
+        val edit=prefs.edit()
+        for(key in candidateKeys(d.ip,d.host,d.mac))edit.remove(key)
+        edit.apply()
+        devs=devs.map{
+            if(it.ip==d.ip){
+                val autoVendor=vendorFromMac(it.mac)
+                it.copy(vendor=autoVendor,type=classify(it.host,autoVendor))
+            }else it
+        }
+        renderAll()
+    }
+
+    private fun showClassificationDialog(d:Dev){
+        val choices=arrayOf(
+            "Mark as HP Aruba Access Point",
+            "Mark as Cisco Access Point",
+            "Mark as Non-AP / Other Device",
+            "Mark as Unknown",
+            "Clear Manual Classification"
+        )
+        android.app.AlertDialog.Builder(this)
+            .setTitle(d.ip+(if(d.host.isNotBlank())"  "+d.host else ""))
+            .setItems(choices){_,which->
+                when(which){
+                    0->saveOverride(d,"HP Aruba","Access Point")
+                    1->saveOverride(d,"Cisco","Access Point")
+                    2->saveOverride(d,"Manual","Other Device")
+                    3->saveOverride(d,"","Unknown")
+                    4->clearOverride(d)
+                }
+            }
+            .show()
     }
 
     private fun vendorFromMac(mac:String):String{
@@ -495,6 +562,10 @@ class MainActivity:Activity(){
                 }
                 return view
             }
+        }
+        lists[tag]?.setOnItemLongClickListener{_,_,position,_->
+            if(position in rows.indices)showClassificationDialog(rows[position])
+            true
         }
     }
 }
