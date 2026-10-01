@@ -34,7 +34,7 @@ public sealed class MainForm : Form
 
     public MainForm()
     {
-        Text = "PINGS v0.4";
+        Text = "PINGS v0.5";
         Width = 1250;
         Height = 760;
 
@@ -122,7 +122,7 @@ public sealed class MainForm : Form
 
     private DataGridView NewGrid()
     {
-        return new DataGridView
+        var grid = new DataGridView
         {
             Dock = DockStyle.Fill,
             ReadOnly = true,
@@ -133,6 +133,29 @@ public sealed class MainForm : Form
             SelectionMode = DataGridViewSelectionMode.FullRowSelect,
             MultiSelect = false
         };
+        grid.DataBindingComplete += (_, _) => ApplyRowColors(grid);
+        return grid;
+    }
+
+    private static void ApplyRowColors(DataGridView grid)
+    {
+        foreach (DataGridViewRow row in grid.Rows)
+        {
+            if (row.DataBoundItem is not DeviceRow d) continue;
+            if (d.Status == "Pingable")
+            {
+                row.DefaultCellStyle.BackColor = Color.LightGreen;
+                row.DefaultCellStyle.ForeColor = Color.Black;
+            }
+            else
+            {
+                row.DefaultCellStyle.BackColor = Color.MistyRose;
+                row.DefaultCellStyle.ForeColor = Color.DarkRed;
+            }
+
+            if (d.Change == "NEW")
+                row.DefaultCellStyle.Font = new Font(grid.Font, FontStyle.Bold);
+        }
     }
 
     private static DeviceRow Clone(DeviceRow d) => new()
