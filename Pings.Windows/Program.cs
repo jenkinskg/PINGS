@@ -3,6 +3,7 @@ using System.Net;
 using System.Net.NetworkInformation;
 using System.Net.Sockets;
 using System.Runtime.InteropServices;
+using System.Text.Json;
 
 ApplicationConfiguration.Initialize();
 Application.Run(new MainForm());
@@ -17,6 +18,12 @@ public sealed class DeviceRow
     public string Status { get; set; } = "";
     public long LatencyMs { get; set; } = -1;
     public string Change { get; set; } = "";
+}
+
+public sealed class ManualOverride
+{
+    public string Vendor { get; set; } = "";
+    public string Type { get; set; } = "Unknown";
 }
 
 public sealed class MainForm : Form
@@ -38,10 +45,14 @@ public sealed class MainForm : Form
     private List<DeviceRow> current = new();
     private List<DeviceRow> baseline = new();
     private bool compareMode = false;
+    private readonly Dictionary<string, ManualOverride> manualOverrides = new(StringComparer.OrdinalIgnoreCase);
+    private readonly string overrideFile = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+        "PINGS", "device-overrides.json");
 
     public MainForm()
     {
-        Text = "PINGS Network Monitor v0.6";
+        Text = "PINGS Network Monitor v0.7";
         Width = 1360;
         Height = 820;
         MinimumSize = new Size(1050, 650);
@@ -53,6 +64,7 @@ public sealed class MainForm : Form
         filter.SelectedIndex = 0;
         repeat.Items.AddRange(new object[] { "Off", "30 sec", "5 min" });
         repeat.SelectedIndex = 0;
+        LoadOverrides();
 
         var top = new FlowLayoutPanel
         {
@@ -182,7 +194,7 @@ public sealed class MainForm : Form
             AutoGenerateColumns = true,
             AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.AllCells,
             SelectionMode = DataGridViewSelectionMode.FullRowSelect,
-            MultiSelect = false,
+            MultiSelect = true,
             BackgroundColor = Color.White,
             BorderStyle = BorderStyle.None,
             GridColor = Color.FromArgb(225, 230, 236),
@@ -197,6 +209,7 @@ public sealed class MainForm : Form
         grid.DefaultCellStyle.SelectionBackColor = Color.FromArgb(205, 225, 246);
         grid.DefaultCellStyle.SelectionForeColor = Color.Black;
         grid.DataBindingComplete += (_, _) => ApplyRowColors(grid);
+        AttachClassificationMenu(grid);
         return grid;
     }
 
@@ -225,6 +238,136 @@ public sealed class MainForm : Form
         IP = d.IP, Hostname = d.Hostname, MAC = d.MAC, Vendor = d.Vendor,
         Type = d.Type, Status = d.Status, LatencyMs = d.LatencyMs, Change = d.Change
     };
+
+    private void AttachClassificationMenu(DataGridView grid)
+    {
+        var menu = new ContextMenuStrip();
+        menu.Items.Add("Mark as HP Aruba Access Point", null, (_, _) =>
+            ApplyManualClassification(grid, "HP Aruba", "Access Point"));
+        menu.Items.Add("Mark as Cisco Access Point", null, (_, _) =>
+            ApplyManualClassification(grid, "Cisco", "Access Point"));
+        menu.Items.Add("Mark as Non-AP / Other Device", null, (_, _) =>
+            ApplyManualClassification(grid, "Manual", "Other Device"));
+        menu.Items.Add("Mark as Unknown", null, (_, _) =>
+            ApplyManualClassification(grid, "", "Unknown"));
+        menu.Items.Add(new ToolStripSeparator());
+        menu.Items.Add("Clear Manual Classification", null, (_, _) =>
+            ClearManualClassification(grid));
+
+        grid.ContextMenuStrip = menu;
+        grid.CellMouseDown += (_, e) =>
+        {
+            if (e.Button != MouseButtons.Right || e.RowIndex < 0) return;
+            if (!grid.Rows[e.RowIndex].Selected)
+            {
+                grid.ClearSelection();
+                grid.Rows[e.RowIndex].Selected = true;
+            }
+            if (grid.Rows[e.RowIndex].Cells.Count > 0)
+                grid.CurrentCell = grid.Rows[e.RowIndex].Cells[0];
+        };
+    }
+
+    private void ApplyManualClassification(DataGridView grid, string vendor, string type)
+    {
+        var selected = grid.SelectedRows.Cast<DataGridViewRow>()
+            .Select(r => r.DataBoundItem as DeviceRow)
+            .Where(d => d != null)
+            .Cast<DeviceRow>()
+            .ToList();
+
+        if (selected.Count == 0 && grid.CurrentRow?.DataBoundItem is DeviceRow one)
+            selected.Add(one);
+
+        foreach (var d in selected)
+        {
+            var live = current.FirstOrDefault(x => x.IP == d.IP);
+            if (live == null) continue;
+
+            live.Vendor = vendor;
+            live.Type = type;
+            SaveOverride(live, new ManualOverride { Vendor = vendor, Type = type });
+        }
+
+        RefreshViews();
+    }
+
+    private void ClearManualClassification(DataGridView grid)
+    {
+        var selected = grid.SelectedRows.Cast<DataGridViewRow>()
+            .Select(r => r.DataBoundItem as DeviceRow)
+            .Where(d => d != null)
+            .Cast<DeviceRow>()
+            .ToList();
+
+        if (selected.Count == 0 && grid.CurrentRow?.DataBoundItem is DeviceRow one)
+            selected.Add(one);
+
+        foreach (var d in selected)
+        {
+            var live = current.FirstOrDefault(x => x.IP == d.IP);
+            if (live == null) continue;
+
+            foreach (var key in CandidateKeys(live.IP, live.Hostname, live.MAC))
+                manualOverrides.Remove(key);
+
+            live.Vendor = VendorFromMac(live.MAC);
+            live.Type = Classify(live.Hostname, live.Vendor);
+        }
+
+        PersistOverrides();
+        RefreshViews();
+    }
+
+    private static IEnumerable<string> CandidateKeys(string ip, string host, string mac)
+    {
+        if (!string.IsNullOrWhiteSpace(mac))
+            yield return "mac:" + mac.Replace(":", "").Replace("-", "").ToUpperInvariant();
+        if (!string.IsNullOrWhiteSpace(host))
+            yield return "host:" + host.Trim().ToLowerInvariant();
+        if (!string.IsNullOrWhiteSpace(ip))
+            yield return "ip:" + ip.Trim();
+    }
+
+    private ManualOverride? GetOverride(string ip, string host, string mac)
+    {
+        foreach (var key in CandidateKeys(ip, host, mac))
+            if (manualOverrides.TryGetValue(key, out var value))
+                return value;
+        return null;
+    }
+
+    private void SaveOverride(DeviceRow d, ManualOverride value)
+    {
+        var key = CandidateKeys(d.IP, d.Hostname, d.MAC).FirstOrDefault();
+        if (key == null) return;
+        manualOverrides[key] = value;
+        PersistOverrides();
+    }
+
+    private void LoadOverrides()
+    {
+        try
+        {
+            if (!File.Exists(overrideFile)) return;
+            var json = File.ReadAllText(overrideFile);
+            var loaded = JsonSerializer.Deserialize<Dictionary<string, ManualOverride>>(json);
+            if (loaded == null) return;
+            foreach (var kv in loaded) manualOverrides[kv.Key] = kv.Value;
+        }
+        catch { }
+    }
+
+    private void PersistOverrides()
+    {
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(overrideFile)!);
+            File.WriteAllText(overrideFile,
+                JsonSerializer.Serialize(manualOverrides, new JsonSerializerOptions { WriteIndented = true }));
+        }
+        catch { }
+    }
 
     private string CurrentSubnet()
     {
@@ -293,13 +436,21 @@ public sealed class MainForm : Form
                     vendor = VendorFromMac(mac);
                 }
 
+                string type = Classify(host, vendor);
+                var manual = GetOverride(ip, host, mac);
+                if (manual != null)
+                {
+                    vendor = manual.Vendor;
+                    type = manual.Type;
+                }
+
                 bag.Add(new DeviceRow
                 {
                     IP = ip,
                     Hostname = host,
                     MAC = mac,
                     Vendor = vendor,
-                    Type = Classify(host, vendor),
+                    Type = type,
                     Status = up ? "Pingable" : "No Ping",
                     LatencyMs = ms
                 });
