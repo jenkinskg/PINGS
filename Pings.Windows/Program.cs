@@ -99,7 +99,7 @@ public sealed class MainForm : Form
         {
             compareMode = true;
             RefreshViews();
-            tabs.SelectedTab = tabs.TabPages["Missing / Changed"];
+            tabs.SelectedIndex = 5;
         };
         filter.SelectedIndexChanged += (_, _) => RefreshViews();
 
