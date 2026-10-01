@@ -41,9 +41,13 @@ public sealed class MainForm : Form
 
     public MainForm()
     {
-        Text = "PINGS v0.6";
-        Width = 1320;
-        Height = 780;
+        Text = "PINGS Network Monitor v0.6";
+        Width = 1360;
+        Height = 820;
+        MinimumSize = new Size(1050, 650);
+        BackColor = Color.FromArgb(242, 245, 249);
+        Font = new Font("Segoe UI", 9.5f);
+        StartPosition = FormStartPosition.CenterScreen;
 
         filter.Items.AddRange(new object[] { "All", "Pingable", "No Ping" });
         filter.SelectedIndex = 0;
@@ -53,9 +57,20 @@ public sealed class MainForm : Form
         var top = new FlowLayoutPanel
         {
             Dock = DockStyle.Top,
-            Height = 86,
+            Height = 118,
             WrapContents = true,
-            AutoScroll = true
+            AutoScroll = true,
+            Padding = new Padding(14, 10, 14, 8),
+            BackColor = Color.White
+        };
+
+        var title = new Label
+        {
+            Text = "PINGS  •  Network Availability Monitor",
+            AutoSize = true,
+            Font = new Font("Segoe UI Semibold", 14f),
+            ForeColor = Color.FromArgb(35, 49, 66),
+            Padding = new Padding(2, 5, 20, 5)
         };
 
         var currentSubnet = new Button { Text = "Current Subnet", AutoSize = true };
@@ -63,13 +78,20 @@ public sealed class MainForm : Form
         var setBefore = new Button { Text = "Set Before", AutoSize = true };
         var compare = new Button { Text = "Compare Before/After", AutoSize = true };
 
+        foreach (var b in new[] { currentSubnet, scan, setBefore, compare, pingableBtn, apBtn, nonApBtn, noPingBtn })
+            StyleButton(b);
+
+        scan.Font = new Font("Segoe UI Semibold", 9.5f);
+        compare.Font = new Font("Segoe UI Semibold", 9.5f);
+
         top.Controls.AddRange(new Control[]
         {
-            new Label { Text = "Subnet:", AutoSize = true, Padding = new Padding(0,8,0,0) },
+            title,
+            new Label { Text = "Subnet:", AutoSize = true, Padding = new Padding(0,8,0,0), ForeColor = Color.FromArgb(70,80,92) },
             subnet, currentSubnet, scan,
-            new Label { Text = "Show:", AutoSize = true, Padding = new Padding(8,8,0,0) },
+            new Label { Text = "Show:", AutoSize = true, Padding = new Padding(8,8,0,0), ForeColor = Color.FromArgb(70,80,92) },
             filter,
-            new Label { Text = "Repeat:", AutoSize = true, Padding = new Padding(8,8,0,0) },
+            new Label { Text = "Repeat:", AutoSize = true, Padding = new Padding(8,8,0,0), ForeColor = Color.FromArgb(70,80,92) },
             repeat,
             setBefore, compare,
             pingableBtn, apBtn, nonApBtn, noPingBtn,
@@ -88,6 +110,15 @@ public sealed class MainForm : Form
             page.Controls.Add(grid);
             tabs.TabPages.Add(page);
         }
+
+        tabs.Font = new Font("Segoe UI Semibold", 9.5f);
+        tabs.Padding = new Point(14, 6);
+        tabs.Appearance = TabAppearance.Normal;
+
+        summary.Font = new Font("Segoe UI Semibold", 9f);
+        summary.ForeColor = Color.FromArgb(42, 67, 101);
+        compareSummary.Font = new Font("Segoe UI", 9f);
+        compareSummary.ForeColor = Color.FromArgb(91, 101, 115);
 
         Controls.Add(tabs);
         Controls.Add(top);
@@ -129,6 +160,17 @@ public sealed class MainForm : Form
         Shown += (_, _) => UpdateCounts();
     }
 
+    private static void StyleButton(Button b)
+    {
+        b.FlatStyle = FlatStyle.Standard;
+        b.UseVisualStyleBackColor = true;
+        b.Font = new Font("Segoe UI", 9.25f);
+        b.Padding = new Padding(8, 3, 8, 3);
+        b.Margin = new Padding(4, 3, 4, 3);
+        b.MinimumSize = new Size(86, 31);
+        b.Cursor = Cursors.Hand;
+    }
+
     private DataGridView NewGrid()
     {
         var grid = new DataGridView
@@ -140,8 +182,20 @@ public sealed class MainForm : Form
             AutoGenerateColumns = true,
             AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.AllCells,
             SelectionMode = DataGridViewSelectionMode.FullRowSelect,
-            MultiSelect = false
+            MultiSelect = false,
+            BackgroundColor = Color.White,
+            BorderStyle = BorderStyle.None,
+            GridColor = Color.FromArgb(225, 230, 236),
+            RowHeadersVisible = false,
+            EnableHeadersVisualStyles = false,
+            ColumnHeadersHeight = 34,
+            RowTemplate = { Height = 30 }
         };
+        grid.ColumnHeadersDefaultCellStyle.BackColor = Color.FromArgb(45, 63, 82);
+        grid.ColumnHeadersDefaultCellStyle.ForeColor = Color.White;
+        grid.ColumnHeadersDefaultCellStyle.Font = new Font("Segoe UI Semibold", 9f);
+        grid.DefaultCellStyle.SelectionBackColor = Color.FromArgb(205, 225, 246);
+        grid.DefaultCellStyle.SelectionForeColor = Color.Black;
         grid.DataBindingComplete += (_, _) => ApplyRowColors(grid);
         return grid;
     }
