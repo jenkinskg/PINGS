@@ -58,6 +58,7 @@ class MainActivity:Activity(){
     private val exportRequestCode=711
     private var pendingExportContent:String?=null
     private val prefs by lazy { getSharedPreferences("device_classifications", Context.MODE_PRIVATE) }
+    private val learnedPrefs by lazy { getSharedPreferences("learned_mac_prefixes", Context.MODE_PRIVATE) }
 
     private val repeatTask=object:Runnable{
         override fun run(){
@@ -90,7 +91,7 @@ class MainActivity:Activity(){
             setTextColor(Color.rgb(35,49,66))
         })
         header.addView(TextView(this).apply{
-            text="Network Availability Monitor • v0.13"
+            text="Network Availability Monitor • v0.14"
             textSize=12f
             setTextColor(Color.rgb(105,115,126))
         })
@@ -617,6 +618,13 @@ class MainActivity:Activity(){
                     var vendor=vendorFromMac(mac)
                     var type=classify(host,vendor)
                     var group=""
+
+                    val learned=getLearnedPrefix(mac)
+                    if(learned!=null){
+                        vendor=learned.first
+                        type=learned.second
+                    }
+
                     val manual=getOverride(ip,host,mac)
                     if(manual!=null){
                         vendor=manual.first
@@ -696,27 +704,29 @@ class MainActivity:Activity(){
 
     private fun showClassificationDialog(items:List<Dev>){
         val choices=arrayOf(
-            "Mark as HP Aruba Access Point",
+            "Mark as HP Aruba Access Point (learn MAC prefix)",
             "Mark as Cisco / Meraki Access Point",
             "Mark as PC / Desktop",
             "Mark as Non-AP / Other Device",
             "Mark as Unknown",
             "Assign to Custom Group...",
             "Clear Custom Group",
+            "Forget Learned MAC Prefix",
             "Clear Manual Classification"
         )
         android.app.AlertDialog.Builder(this)
             .setTitle("Classify "+items.size+" selected device"+(if(items.size==1)"" else "s"))
             .setItems(choices){_,which->
                 when(which){
-                    0->items.forEach{saveOverride(it,"HP Aruba","Access Point")}
+                    0->learnAndClassifyAruba(items)
                     1->items.forEach{saveOverride(it,"Cisco / Meraki","Access Point")}
                     2->items.forEach{saveOverride(it,"Manual","PC / Desktop")}
                     3->items.forEach{saveOverride(it,"Manual","Other Device")}
                     4->items.forEach{saveOverride(it,"","Unknown")}
                     5->promptCustomGroup(items)
                     6->items.forEach{saveOverride(it,it.vendor,it.type,"")}
-                    7->items.forEach{clearOverride(it)}
+                    7->forgetLearnedPrefixes(items)
+                    8->items.forEach{clearOverride(it)}
                 }
                 if(which!=5){
                     selectedIps.clear()
@@ -724,6 +734,96 @@ class MainActivity:Activity(){
                 }
             }
             .show()
+    }
+
+    private fun macPrefix(mac:String):String?{
+        val normalized=mac.replace(":","").replace("-","").trim().uppercase()
+        return if(normalized.length>=6)normalized.substring(0,6) else null
+    }
+
+    private fun formatMacPrefix(prefix:String):String{
+        return if(prefix.length>=6)
+            prefix.substring(0,2)+":"+prefix.substring(2,4)+":"+prefix.substring(4,6)
+        else prefix
+    }
+
+    private fun getLearnedPrefix(mac:String):Override?{
+        val prefix=macPrefix(mac)?:return null
+        val raw=learnedPrefs.getString(prefix,null)?:return null
+        val parts=raw.split("|")
+        return if(parts.size>=2)Override(parts[0],parts[1],"") else null
+    }
+
+    private fun learnAndClassifyAruba(items:List<Dev>){
+        val learned=linkedSetOf<String>()
+
+        for(d in items){
+            saveOverride(d,"HP Aruba","Access Point")
+            val prefix=macPrefix(d.mac)
+            if(prefix!=null){
+                learnedPrefs.edit().putString(prefix,"HP Aruba|Access Point").apply()
+                learned.add(prefix)
+            }
+        }
+
+        if(learned.isNotEmpty()){
+            devs=devs.map{d->
+                val manual=getOverride(d.ip,d.host,d.mac)
+                val learnedRule=getLearnedPrefix(d.mac)
+                if(manual==null&&learnedRule!=null)
+                    d.copy(vendor=learnedRule.first,type=learnedRule.second)
+                else d
+            }
+
+            Toast.makeText(
+                this,
+                "Learned Aruba prefix"+(if(learned.size==1)" " else "es ")+
+                    learned.joinToString(", "){formatMacPrefix(it)},
+                Toast.LENGTH_LONG
+            ).show()
+        }else{
+            Toast.makeText(
+                this,
+                "No MAC address available; PINGS remembered only the selected device.",
+                Toast.LENGTH_LONG
+            ).show()
+        }
+    }
+
+    private fun forgetLearnedPrefixes(items:List<Dev>){
+        val edit=learnedPrefs.edit()
+        var removed=0
+
+        for(d in items){
+            val prefix=macPrefix(d.mac)?:continue
+            if(learnedPrefs.contains(prefix)){
+                edit.remove(prefix)
+                removed++
+            }
+        }
+        edit.apply()
+
+        if(removed==0){
+            Toast.makeText(this,"No learned MAC prefix found",Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        devs=devs.map{d->
+            val manual=getOverride(d.ip,d.host,d.mac)
+            if(manual!=null){
+                d.copy(vendor=manual.first,type=manual.second,group=manual.third)
+            }else{
+                var vendor=vendorFromMac(d.mac)
+                var type=classify(d.host,vendor)
+                val learned=getLearnedPrefix(d.mac)
+                if(learned!=null){
+                    vendor=learned.first
+                    type=learned.second
+                }
+                d.copy(vendor=vendor,type=type)
+            }
+        }
+        Toast.makeText(this,"Forgot "+removed+" learned MAC prefix"+(if(removed==1)"" else "es"),Toast.LENGTH_SHORT).show()
     }
 
     private fun promptCustomGroup(items:List<Dev>){
