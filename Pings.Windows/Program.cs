@@ -626,6 +626,13 @@ public sealed class MainForm : Form
             live.Vendor = VendorFromMac(live.MAC);
             live.Type = IsLocalComputerIp(live.IP) ? "PC / Desktop" : Classify(live.Hostname, live.Vendor);
             live.Group = "";
+
+            var learned = GetLearnedMacPrefix(live.MAC);
+            if (learned != null)
+            {
+                live.Vendor = learned.Vendor;
+                live.Type = learned.Type;
+            }
         }
 
         PersistOverrides();
