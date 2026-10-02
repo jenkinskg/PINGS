@@ -1,5 +1,5 @@
 name: Publish Windows Release
-# v0.11 export build
+# v0.12 export build
 on:
   push:
     paths:
@@ -20,7 +20,7 @@ jobs:
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v0.11
-          name: PINGS v0.11
-          body: Windows PINGS Network Availability Monitor v0.11
+          tag_name: v0.12
+          name: PINGS v0.12
+          body: Windows PINGS Network Availability Monitor v0.12
           files: Pings.Windows/bin/Release/net8.0-windows/win-x64/publish/Pings.exe
