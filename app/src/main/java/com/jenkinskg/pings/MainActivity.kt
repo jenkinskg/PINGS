@@ -35,13 +35,14 @@ class MainActivity:Activity(){
     private lateinit var repeat:Spinner
     private lateinit var counts:TextView
     private lateinit var compareCounts:TextView
-    private lateinit var tabHost:TabHost
+    private lateinit var list:ListView
     private lateinit var pingBtn:Button
     private lateinit var apBtn:Button
     private lateinit var nonApBtn:Button
     private lateinit var noPingBtn:Button
 
-    private val lists=linkedMapOf<String,ListView>()
+    private val tabButtons=linkedMapOf<String,Button>()
+    private var currentTab="all"
     private var devs=listOf<Dev>()
     private var before=listOf<Dev>()
     private var compareMode=false
@@ -81,7 +82,7 @@ class MainActivity:Activity(){
             setTextColor(Color.rgb(35,49,66))
         })
         header.addView(TextView(this).apply{
-            text="Network Availability Monitor • v0.7"
+            text="Network Availability Monitor • v0.8"
             textSize=12f
             setTextColor(Color.rgb(105,115,126))
         })
@@ -121,8 +122,8 @@ class MainActivity:Activity(){
         },buttonLp())
         buttons.addView(actionButton("Compare Before/After"){
             compareMode=true
+            currentTab="changes"
             renderAll()
-            tabHost.currentTab=6
         },buttonLp())
         actionScroll.addView(buttons)
 
@@ -166,10 +167,10 @@ class MainActivity:Activity(){
         apBtn=countButton("APs: 0",Color.rgb(43,94,154))
         nonApBtn=countButton("Non-APs: 0",Color.rgb(89,100,114))
         noPingBtn=countButton("Not Responding: 0",Color.rgb(166,55,55))
-        pingBtn.setOnClickListener{filter.setSelection(1);tabHost.currentTab=0}
-        apBtn.setOnClickListener{filter.setSelection(1);tabHost.currentTab=1}
-        nonApBtn.setOnClickListener{filter.setSelection(1);tabHost.currentTab=2}
-        noPingBtn.setOnClickListener{filter.setSelection(2);tabHost.currentTab=0}
+        pingBtn.setOnClickListener{filter.setSelection(1);currentTab="all";renderAll()}
+        apBtn.setOnClickListener{filter.setSelection(1);currentTab="aps";renderAll()}
+        nonApBtn.setOnClickListener{filter.setSelection(1);currentTab="nonaps";renderAll()}
+        noPingBtn.setOnClickListener{filter.setSelection(2);currentTab="all";renderAll()}
         countRow.addView(pingBtn,buttonLp())
         countRow.addView(apBtn,buttonLp())
         countRow.addView(nonApBtn,buttonLp())
@@ -186,34 +187,41 @@ class MainActivity:Activity(){
             setTextColor(Color.rgb(91,101,115))
         }
 
-        tabHost=TabHost(this)
-        val tabLayout=LinearLayout(this).apply{orientation=LinearLayout.VERTICAL}
-        val tabScroll=HorizontalScrollView(this).apply{isHorizontalScrollBarEnabled=false}
-        val tabWidget=TabWidget(this).apply{id=android.R.id.tabs}
-        tabScroll.addView(tabWidget,ViewGroup.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT,ViewGroup.LayoutParams.WRAP_CONTENT))
-        val content=FrameLayout(this).apply{
-            id=android.R.id.tabcontent
-            setBackgroundColor(Color.WHITE)
+        val tabScroll=HorizontalScrollView(this).apply{
+            isHorizontalScrollBarEnabled=false
+            setBackgroundColor(Color.rgb(236,240,245))
         }
-        tabLayout.addView(tabScroll,LinearLayout.LayoutParams(-1,dp(50)))
-        tabLayout.addView(content,LinearLayout.LayoutParams(-1,0,1f))
-        tabHost.addView(tabLayout)
-        tabHost.setup()
+        val tabRow=LinearLayout(this).apply{
+            orientation=LinearLayout.HORIZONTAL
+            setPadding(dp(8),dp(5),dp(8),dp(5))
+        }
+        addTabButton(tabRow,"all","All Pings")
+        addTabButton(tabRow,"aps","APs")
+        addTabButton(tabRow,"nonaps","Non-APs")
+        addTabButton(tabRow,"pcs","PCs")
+        addTabButton(tabRow,"other","Other")
+        addTabButton(tabRow,"unknown","Unknown")
+        addTabButton(tabRow,"changes","Missing/Changed")
+        tabScroll.addView(tabRow)
 
-        addTab(content,"all","All Pings")
-        addTab(content,"aps","APs")
-        addTab(content,"nonaps","Non-APs")
-        addTab(content,"pcs","PCs")
-        addTab(content,"other","Other")
-        addTab(content,"unknown","Unknown")
-        addTab(content,"changes","Missing/Changed")
-        styleTabs()
+        list=ListView(this).apply{
+            setBackgroundColor(Color.WHITE)
+            dividerHeight=1
+            setOnItemLongClickListener{_,_,position,_->
+                val rows=visibleRows()
+                if(position in rows.indices){
+                    showClassificationDialog(rows[position])
+                    true
+                }else false
+            }
+        }
 
         root.addView(header)
         root.addView(countScroll,LinearLayout.LayoutParams(-1,dp(58)))
         root.addView(counts)
         root.addView(compareCounts)
-        root.addView(tabHost,LinearLayout.LayoutParams(-1,0,1f))
+        root.addView(tabScroll,LinearLayout.LayoutParams(-1,dp(54)))
+        root.addView(list,LinearLayout.LayoutParams(-1,0,1f))
         setContentView(root)
     }
 
@@ -270,40 +278,39 @@ class MainActivity:Activity(){
     private fun darken(c:Int):Int=
         Color.rgb((Color.red(c)-28).coerceAtLeast(0),(Color.green(c)-28).coerceAtLeast(0),(Color.blue(c)-28).coerceAtLeast(0))
 
-    private fun addTab(content:FrameLayout,tag:String,label:String){
-        val lv=ListView(this).apply{
-            id=View.generateViewId()
-            dividerHeight=1
-            setBackgroundColor(Color.WHITE)
-        }
-        content.addView(lv,FrameLayout.LayoutParams(-1,-1))
-        lists[tag]=lv
-        tabHost.addTab(tabHost.newTabSpec(tag).setIndicator(label).setContent(lv.id))
-    }
-
-    private fun styleTabs(){
-        for(i in 0 until tabHost.tabWidget.tabCount){
-            val child=tabHost.tabWidget.getChildAt(i)
-            child.setPadding(dp(12),0,dp(12),0)
-            child.setBackgroundColor(Color.rgb(236,240,245))
-            val title=findTextView(child)
-            title?.apply{
-                setTextColor(Color.rgb(48,62,78))
-                textSize=12f
-                setTypeface(typeface,Typeface.BOLD)
+    private fun addTabButton(row:LinearLayout,key:String,label:String){
+        val b=Button(this).apply{
+            text=label
+            isAllCaps=false
+            textSize=12f
+            minHeight=dp(38)
+            setPadding(dp(12),0,dp(12),0)
+            setOnClickListener{
+                currentTab=key
+                renderAll()
             }
         }
+        tabButtons[key]=b
+        row.addView(b,LinearLayout.LayoutParams(-2,dp(42)).apply{
+            setMargins(dp(3),0,dp(3),0)
+        })
     }
 
-    private fun findTextView(v:View):TextView?{
-        if(v is TextView)return v
-        if(v is ViewGroup){
-            for(i in 0 until v.childCount){
-                val found=findTextView(v.getChildAt(i))
-                if(found!=null)return found
+    private fun styleTabButtons(){
+        for((key,b) in tabButtons){
+            val selected=key==currentTab
+            b.setTypeface(b.typeface,Typeface.BOLD)
+            b.setTextColor(if(selected)Color.WHITE else Color.rgb(48,62,78))
+            b.background=GradientDrawable(
+                GradientDrawable.Orientation.TOP_BOTTOM,
+                if(selected)intArrayOf(Color.rgb(67,125,190),Color.rgb(42,91,150))
+                else intArrayOf(Color.WHITE,Color.rgb(226,232,239))
+            ).apply{
+                cornerRadius=dp(8).toFloat()
+                setStroke(dp(1),if(selected)Color.rgb(36,78,128) else Color.rgb(181,191,202))
             }
+            b.elevation=dp(if(selected)4 else 2).toFloat()
         }
-        return null
     }
 
     private fun currentSubnet():String{
@@ -500,17 +507,22 @@ class MainActivity:Activity(){
         }
     }
 
-    private fun renderAll(){
-        if(!::filter.isInitialized||!::tabHost.isInitialized)return
+    private fun visibleRows():List<Dev>{
         val all=buildRows()
-        setList("all",statusFilter(all))
-        setList("aps",statusFilter(all.filter{it.type=="Access Point"}))
-        setList("nonaps",statusFilter(all.filter{it.up&&it.type!="Access Point"}))
-        setList("pcs",statusFilter(all.filter{it.type=="PC / Desktop"}))
-        setList("other",statusFilter(all.filter{it.type=="Other Device"}))
-        setList("unknown",statusFilter(all.filter{it.type=="Unknown"}))
-        setList("changes",statusFilter(all.filter{it.change.isNotEmpty()}))
+        val rows=when(currentTab){
+            "aps"->all.filter{it.type=="Access Point"}
+            "nonaps"->all.filter{it.up&&it.type!="Access Point"}
+            "pcs"->all.filter{it.type=="PC / Desktop"}
+            "other"->all.filter{it.type=="Other Device"}
+            "unknown"->all.filter{it.type=="Unknown"}
+            "changes"->all.filter{it.change.isNotEmpty()}
+            else->all
+        }
+        return statusFilter(rows)
+    }
 
+    private fun renderAll(){
+        if(!::filter.isInitialized||!::list.isInitialized)return
         val ping=devs.count{it.up}
         val aps=devs.count{it.up&&it.type=="Access Point"}
         val nonaps=devs.count{it.up&&it.type!="Access Point"}
@@ -531,10 +543,12 @@ class MainActivity:Activity(){
             val bno=before.count{!it.up}
             compareCounts.text="Before → Now  •  Pingable "+bp+"→"+ping+"  •  APs "+ba+"→"+aps+"  •  Non-APs "+bn+"→"+nonaps+"  •  Not Responding "+bno+"→"+noPing
         }
+        styleTabButtons()
+        setList(visibleRows())
     }
 
-    private fun setList(tag:String,rows:List<Dev>){
-        lists[tag]?.adapter=object:ArrayAdapter<Dev>(this,android.R.layout.simple_list_item_1,rows){
+    private fun setList(rows:List<Dev>){
+        list.adapter=object:ArrayAdapter<Dev>(this,android.R.layout.simple_list_item_1,rows){
             override fun getView(position:Int,convertView:View?,parent:ViewGroup):View{
                 val view=super.getView(position,convertView,parent)
                 val d=getItem(position)!!
@@ -562,10 +576,6 @@ class MainActivity:Activity(){
                 }
                 return view
             }
-        }
-        lists[tag]?.setOnItemLongClickListener{_,_,position,_->
-            if(position in rows.indices)showClassificationDialog(rows[position])
-            true
         }
     }
 }
