@@ -50,13 +50,17 @@ public sealed class MainForm : Form
     private List<DeviceRow> baseline = new();
     private bool compareMode = false;
     private readonly Dictionary<string, ManualOverride> manualOverrides = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, ManualOverride> learnedMacPrefixes = new(StringComparer.OrdinalIgnoreCase);
     private readonly string overrideFile = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
         "PINGS", "device-overrides.json");
+    private readonly string learnedPrefixFile = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+        "PINGS", "learned-mac-prefixes.json");
 
     public MainForm()
     {
-        Text = "PINGS Network Monitor v0.13";
+        Text = "PINGS Network Monitor v0.14";
         Width = 1360;
         Height = 820;
         MinimumSize = new Size(1050, 650);
@@ -69,6 +73,7 @@ public sealed class MainForm : Form
         repeat.Items.AddRange(new object[] { "Off", "30 sec", "5 min" });
         repeat.SelectedIndex = 0;
         LoadOverrides();
+        LoadLearnedMacPrefixes();
 
         var top = new FlowLayoutPanel
         {
@@ -441,8 +446,8 @@ public sealed class MainForm : Form
     private void AttachClassificationMenu(DataGridView grid)
     {
         var menu = new ContextMenuStrip();
-        menu.Items.Add("Mark as HP Aruba Access Point", null, (_, _) =>
-            ApplyManualClassification(grid, "HP Aruba", "Access Point"));
+        menu.Items.Add("Mark as HP Aruba Access Point (learn MAC prefix)", null, (_, _) =>
+            ApplyManualClassification(grid, "HP Aruba", "Access Point", learnMacPrefix: true));
         menu.Items.Add("Mark as Cisco Access Point", null, (_, _) =>
             ApplyManualClassification(grid, "Cisco / Meraki", "Access Point"));
         menu.Items.Add("Mark as PC / Desktop", null, (_, _) =>
@@ -457,6 +462,8 @@ public sealed class MainForm : Form
         menu.Items.Add("Clear Custom Group", null, (_, _) =>
             ClearCustomGroup(grid));
         menu.Items.Add(new ToolStripSeparator());
+        menu.Items.Add("Forget Learned MAC Prefix", null, (_, _) =>
+            ForgetLearnedMacPrefix(grid));
         menu.Items.Add("Clear Manual Classification", null, (_, _) =>
             ClearManualClassification(grid));
 
@@ -474,7 +481,7 @@ public sealed class MainForm : Form
         };
     }
 
-    private void ApplyManualClassification(DataGridView grid, string vendor, string type)
+    private void ApplyManualClassification(DataGridView grid, string vendor, string type, bool learnMacPrefix = false)
     {
         var selected = grid.SelectedRows.Cast<DataGridViewRow>()
             .Select(r => r.DataBoundItem as DeviceRow)
@@ -485,6 +492,8 @@ public sealed class MainForm : Form
         if (selected.Count == 0 && grid.CurrentRow?.DataBoundItem is DeviceRow one)
             selected.Add(one);
 
+        var learned = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
         foreach (var d in selected)
         {
             var live = current.FirstOrDefault(x => x.IP == d.IP);
@@ -493,6 +502,103 @@ public sealed class MainForm : Form
             live.Vendor = vendor;
             live.Type = type;
             SaveOverride(live, new ManualOverride { Vendor = vendor, Type = type, Group = live.Group });
+
+            if (learnMacPrefix)
+            {
+                var prefix = MacPrefix(live.MAC);
+                if (prefix != null)
+                {
+                    learnedMacPrefixes[prefix] = new ManualOverride { Vendor = vendor, Type = type };
+                    learned.Add(prefix);
+                }
+            }
+        }
+
+        if (learned.Count > 0)
+        {
+            PersistLearnedMacPrefixes();
+            ApplyLearnedPrefixesToCurrent();
+            MessageBox.Show(
+                "Learned MAC prefix" + (learned.Count == 1 ? "" : "es") + ": " +
+                string.Join(", ", learned.Select(FormatMacPrefix)) +
+                "\nMatching devices will now be classified automatically on future scans.");
+        }
+        else if (learnMacPrefix)
+        {
+            MessageBox.Show("The selected device did not have a MAC address, so PINGS could only remember that one device.");
+        }
+
+        RefreshViews();
+    }
+
+    private static string? MacPrefix(string mac)
+    {
+        var normalized = mac.Replace(":", "").Replace("-", "").Trim().ToUpperInvariant();
+        return normalized.Length >= 6 ? normalized[..6] : null;
+    }
+
+    private static string FormatMacPrefix(string prefix) =>
+        prefix.Length >= 6 ? prefix[..2] + ":" + prefix.Substring(2, 2) + ":" + prefix.Substring(4, 2) : prefix;
+
+    private ManualOverride? GetLearnedMacPrefix(string mac)
+    {
+        var prefix = MacPrefix(mac);
+        if (prefix != null && learnedMacPrefixes.TryGetValue(prefix, out var value))
+            return value;
+        return null;
+    }
+
+    private void ApplyLearnedPrefixesToCurrent()
+    {
+        foreach (var live in current)
+        {
+            if (GetOverride(live.IP, live.Hostname, live.MAC) != null) continue;
+            var learned = GetLearnedMacPrefix(live.MAC);
+            if (learned == null) continue;
+            live.Vendor = learned.Vendor;
+            live.Type = learned.Type;
+        }
+    }
+
+    private void ForgetLearnedMacPrefix(DataGridView grid)
+    {
+        var selected = GetSelectedDevices(grid);
+        var removed = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var d in selected)
+        {
+            var prefix = MacPrefix(d.MAC);
+            if (prefix != null && learnedMacPrefixes.Remove(prefix))
+                removed.Add(prefix);
+        }
+
+        if (removed.Count == 0)
+        {
+            MessageBox.Show("No learned MAC prefix was found for the selected device(s).");
+            return;
+        }
+
+        PersistLearnedMacPrefixes();
+
+        foreach (var live in current)
+        {
+            var manual = GetOverride(live.IP, live.Hostname, live.MAC);
+            if (manual != null)
+            {
+                live.Vendor = manual.Vendor;
+                live.Type = manual.Type;
+                continue;
+            }
+
+            live.Vendor = VendorFromMac(live.MAC);
+            live.Type = IsLocalComputerIp(live.IP) ? "PC / Desktop" : Classify(live.Hostname, live.Vendor);
+
+            var learned = GetLearnedMacPrefix(live.MAC);
+            if (learned != null)
+            {
+                live.Vendor = learned.Vendor;
+                live.Type = learned.Type;
+            }
         }
 
         RefreshViews();
@@ -642,6 +748,30 @@ public sealed class MainForm : Form
         catch { }
     }
 
+    private void LoadLearnedMacPrefixes()
+    {
+        try
+        {
+            if (!File.Exists(learnedPrefixFile)) return;
+            var json = File.ReadAllText(learnedPrefixFile);
+            var loaded = JsonSerializer.Deserialize<Dictionary<string, ManualOverride>>(json);
+            if (loaded == null) return;
+            foreach (var kv in loaded) learnedMacPrefixes[kv.Key] = kv.Value;
+        }
+        catch { }
+    }
+
+    private void PersistLearnedMacPrefixes()
+    {
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(learnedPrefixFile)!);
+            File.WriteAllText(learnedPrefixFile,
+                JsonSerializer.Serialize(learnedMacPrefixes, new JsonSerializerOptions { WriteIndented = true }));
+        }
+        catch { }
+    }
+
     private string CurrentSubnet()
     {
         foreach (var ni in NetworkInterface.GetAllNetworkInterfaces().Where(n => n.OperationalStatus == OperationalStatus.Up))
@@ -710,6 +840,14 @@ public sealed class MainForm : Form
                 }
 
                 string type = IsLocalComputerIp(ip) ? "PC / Desktop" : Classify(host, vendor);
+
+                var learned = GetLearnedMacPrefix(mac);
+                if (learned != null)
+                {
+                    vendor = learned.Vendor;
+                    type = learned.Type;
+                }
+
                 var manual = GetOverride(ip, host, mac);
                 if (manual != null)
                 {
