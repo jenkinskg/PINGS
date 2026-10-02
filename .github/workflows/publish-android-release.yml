@@ -1,4 +1,5 @@
 name: Publish Android Release
+# retry after Android compile fix
 on:
   push:
     paths:
