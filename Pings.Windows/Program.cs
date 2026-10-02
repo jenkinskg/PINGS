@@ -54,7 +54,7 @@ public sealed class MainForm : Form
 
     public MainForm()
     {
-        Text = "PINGS Network Monitor v0.9";
+        Text = "PINGS Network Monitor v0.10";
         Width = 1360;
         Height = 820;
         MinimumSize = new Size(1050, 650);
@@ -568,21 +568,39 @@ public sealed class MainForm : Form
         string p = mac.Replace(":", "").Replace("-", "").ToUpperInvariant();
         if (p.Length < 6) return "";
 
+        // Verified Aruba AP/vendor prefixes from the supplied list.
+        // Entries that resolve to Brocade, Huawei, Sitecom, or Cisco were removed.
         string[] aruba =
         {
-            "000B86","001A1E","00246C","001BED","204C03","24DEC6","40E3D6","482F6B",
-            "6026EF","643E8C","64D1A3","703A0E","84D47E","94B40F","988F00","A44C11",
-            "ACA31E","B01F8C","B45D50","C8B5AD","D8C7C8","E81098","F05C19","F42E7F"
+            "000B86","001A1E","00246C","204C03","24DEC6","40E3D6","482F6B",
+            "6026EF","703A0E","84D47E","94B40F","988F00","ACA31E","B01F8C",
+            "B45D50","D8C7C8","E81098","F05C19","F42E7F"
         };
+
+        // HPE-owned prefix documented by Aruba on AP-344/AP-345 examples.
+        string[] hpeAruba = { "C8B5AD" };
+
+        // Cisco Systems prefixes identify the vendor, but NOT the device role.
         string[] cisco =
         {
-            "00077D","00141B","001AA1","00270D","2C3124","380E4D","40A6E8","70695A",
-            "A0ECF9","F44E05","00180A","00259E","04F8C8","08F1B3","0C7BC8","149F43",
-            "E0553A","AC17C8"
+            "00077D","00141B","001AA1","00270D","2C3124","380E4D","40A6E8",
+            "70695A","A0ECF9","F44E05","A44C11"
+        };
+
+        // Verified Cisco Meraki vendor prefixes from the supplied list.
+        // Meraki also makes switches/security/cameras, so vendor alone does not mean AP.
+        string[] meraki =
+        {
+            "00180A","08F1B3","0C7BC8","149F43","E0553D","AC17C8"
         };
 
         if (aruba.Any(p.StartsWith)) return "HP Aruba";
-        if (cisco.Any(p.StartsWith)) return "Cisco / Meraki";
+        if (hpeAruba.Any(p.StartsWith)) return "HPE / Aruba";
+        if (meraki.Any(p.StartsWith)) return "Cisco Meraki";
+        if (cisco.Any(p.StartsWith)) return "Cisco Systems";
+        if (p.StartsWith("001BED")) return "Brocade";
+        if (p.StartsWith("643E8C") || p.StartsWith("00259E")) return "Huawei";
+        if (p.StartsWith("64D1A3")) return "Sitecom";
         return "";
     }
 
@@ -591,8 +609,11 @@ public sealed class MainForm : Form
         string h = host.ToLowerInvariant();
         string v = vendor.ToLowerInvariant();
 
-        if (v.Contains("aruba") || v.Contains("cisco") ||
-            h.Contains("aruba") || h.Contains("cisco") || h.StartsWith("ap-") || h.StartsWith("ap"))
+        // Aruba/HPE prefixes in the verified AP list are treated as AP candidates.
+        // Cisco/Meraki OUIs identify vendor only; require an AP-specific hostname or manual marking.
+        if (v.Contains("aruba") ||
+            h.Contains("aironet") || h.Contains("meraki") || h.Contains("wireless-ap") ||
+            h.Contains("-ap") || h.StartsWith("ap-") || h.StartsWith("ap") || h.StartsWith("wap"))
             return "Access Point";
 
         if (h.Contains("desktop") || h.Contains("laptop") || h.Contains("workstation") ||
