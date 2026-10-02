@@ -378,22 +378,22 @@ class MainActivity:Activity(){
         val host=EditText(this).apply{
             hint="Switch IP or hostname"
             setText(defaultGateway())
-            singleLine=true
+            isSingleLine=true
         }
         val port=EditText(this).apply{
             hint="SSH port"
             setText("22")
             inputType=android.text.InputType.TYPE_CLASS_NUMBER
-            singleLine=true
+            isSingleLine=true
         }
         val user=EditText(this).apply{
             hint="Username"
-            singleLine=true
+            isSingleLine=true
         }
         val password=EditText(this).apply{
             hint="Password"
             inputType=android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD
-            singleLine=true
+            isSingleLine=true
         }
         val vendor=Spinner(this).apply{
             adapter=ArrayAdapter(
