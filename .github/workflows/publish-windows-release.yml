@@ -19,7 +19,7 @@ jobs:
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v0.9
-          name: PINGS v0.9
-          body: Windows PINGS Network Availability Monitor v0.9
+          tag_name: v0.10
+          name: PINGS v0.10
+          body: Windows PINGS Network Availability Monitor v0.10
           files: Pings.Windows/bin/Release/net8.0-windows/win-x64/publish/Pings.exe
