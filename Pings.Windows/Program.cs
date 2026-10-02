@@ -15,6 +15,7 @@ public sealed class DeviceRow
     public string MAC { get; set; } = "";
     public string Vendor { get; set; } = "";
     public string Type { get; set; } = "Unknown";
+    public string Group { get; set; } = "";
     public string Status { get; set; } = "";
     public long LatencyMs { get; set; } = -1;
     public string Change { get; set; } = "";
@@ -24,6 +25,7 @@ public sealed class ManualOverride
 {
     public string Vendor { get; set; } = "";
     public string Type { get; set; } = "Unknown";
+    public string Group { get; set; } = "";
 }
 
 public sealed class MainForm : Form
@@ -52,7 +54,7 @@ public sealed class MainForm : Form
 
     public MainForm()
     {
-        Text = "PINGS Network Monitor v0.7";
+        Text = "PINGS Network Monitor v0.9";
         Width = 1360;
         Height = 820;
         MinimumSize = new Size(1050, 650);
@@ -113,7 +115,7 @@ public sealed class MainForm : Form
         foreach (var name in new[]
         {
             "All Pings", "Access Points", "Non-Access-Points",
-            "PCs / Desktops", "Other Devices", "Unknown", "Missing / Changed"
+            "PCs / Desktops", "Other Devices", "Unknown", "Custom Groups", "Missing / Changed"
         })
         {
             var page = new TabPage(name);
@@ -150,7 +152,7 @@ public sealed class MainForm : Form
         {
             compareMode = true;
             RefreshViews();
-            tabs.SelectedIndex = 6;
+            tabs.SelectedIndex = 7;
         };
         filter.SelectedIndexChanged += (_, _) => RefreshViews();
 
@@ -236,7 +238,7 @@ public sealed class MainForm : Form
     private static DeviceRow Clone(DeviceRow d) => new()
     {
         IP = d.IP, Hostname = d.Hostname, MAC = d.MAC, Vendor = d.Vendor,
-        Type = d.Type, Status = d.Status, LatencyMs = d.LatencyMs, Change = d.Change
+        Type = d.Type, Group = d.Group, Status = d.Status, LatencyMs = d.LatencyMs, Change = d.Change
     };
 
     private void AttachClassificationMenu(DataGridView grid)
@@ -245,11 +247,18 @@ public sealed class MainForm : Form
         menu.Items.Add("Mark as HP Aruba Access Point", null, (_, _) =>
             ApplyManualClassification(grid, "HP Aruba", "Access Point"));
         menu.Items.Add("Mark as Cisco Access Point", null, (_, _) =>
-            ApplyManualClassification(grid, "Cisco", "Access Point"));
+            ApplyManualClassification(grid, "Cisco / Meraki", "Access Point"));
+        menu.Items.Add("Mark as PC / Desktop", null, (_, _) =>
+            ApplyManualClassification(grid, "Manual", "PC / Desktop"));
         menu.Items.Add("Mark as Non-AP / Other Device", null, (_, _) =>
             ApplyManualClassification(grid, "Manual", "Other Device"));
         menu.Items.Add("Mark as Unknown", null, (_, _) =>
             ApplyManualClassification(grid, "", "Unknown"));
+        menu.Items.Add(new ToolStripSeparator());
+        menu.Items.Add("Assign Selected to Custom Group...", null, (_, _) =>
+            AssignCustomGroup(grid));
+        menu.Items.Add("Clear Custom Group", null, (_, _) =>
+            ClearCustomGroup(grid));
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("Clear Manual Classification", null, (_, _) =>
             ClearManualClassification(grid));
@@ -286,7 +295,7 @@ public sealed class MainForm : Form
 
             live.Vendor = vendor;
             live.Type = type;
-            SaveOverride(live, new ManualOverride { Vendor = vendor, Type = type });
+            SaveOverride(live, new ManualOverride { Vendor = vendor, Type = type, Group = live.Group });
         }
 
         RefreshViews();
@@ -312,11 +321,78 @@ public sealed class MainForm : Form
                 manualOverrides.Remove(key);
 
             live.Vendor = VendorFromMac(live.MAC);
-            live.Type = Classify(live.Hostname, live.Vendor);
+            live.Type = IsLocalComputerIp(live.IP) ? "PC / Desktop" : Classify(live.Hostname, live.Vendor);
+            live.Group = "";
         }
 
         PersistOverrides();
         RefreshViews();
+    }
+
+    private void AssignCustomGroup(DataGridView grid)
+    {
+        var selected = GetSelectedDevices(grid);
+        if (selected.Count == 0) return;
+
+        var group = PromptForText("Custom Group", "Enter a group name for the selected devices:");
+        if (string.IsNullOrWhiteSpace(group)) return;
+        group = group.Trim();
+
+        foreach (var d in selected)
+        {
+            var live = current.FirstOrDefault(x => x.IP == d.IP);
+            if (live == null) continue;
+            live.Group = group;
+            SaveOverride(live, new ManualOverride { Vendor = live.Vendor, Type = live.Type, Group = group });
+        }
+        RefreshViews();
+    }
+
+    private void ClearCustomGroup(DataGridView grid)
+    {
+        foreach (var d in GetSelectedDevices(grid))
+        {
+            var live = current.FirstOrDefault(x => x.IP == d.IP);
+            if (live == null) continue;
+            live.Group = "";
+            SaveOverride(live, new ManualOverride { Vendor = live.Vendor, Type = live.Type, Group = "" });
+        }
+        RefreshViews();
+    }
+
+    private static List<DeviceRow> GetSelectedDevices(DataGridView grid)
+    {
+        var selected = grid.SelectedRows.Cast<DataGridViewRow>()
+            .Select(r => r.DataBoundItem as DeviceRow)
+            .Where(d => d != null)
+            .Cast<DeviceRow>()
+            .ToList();
+
+        if (selected.Count == 0 && grid.CurrentRow?.DataBoundItem is DeviceRow one)
+            selected.Add(one);
+        return selected;
+    }
+
+    private static string? PromptForText(string title, string prompt)
+    {
+        using var form = new Form
+        {
+            Text = title,
+            Width = 440,
+            Height = 165,
+            StartPosition = FormStartPosition.CenterParent,
+            FormBorderStyle = FormBorderStyle.FixedDialog,
+            MinimizeBox = false,
+            MaximizeBox = false
+        };
+        var label = new Label { Left = 14, Top = 14, Width = 390, Text = prompt };
+        var box = new TextBox { Left = 14, Top = 42, Width = 390 };
+        var ok = new Button { Text = "OK", Left = 248, Width = 75, Top = 78, DialogResult = DialogResult.OK };
+        var cancel = new Button { Text = "Cancel", Left = 329, Width = 75, Top = 78, DialogResult = DialogResult.Cancel };
+        form.Controls.AddRange(new Control[] { label, box, ok, cancel });
+        form.AcceptButton = ok;
+        form.CancelButton = cancel;
+        return form.ShowDialog() == DialogResult.OK ? box.Text : null;
     }
 
     private static IEnumerable<string> CandidateKeys(string ip, string host, string mac)
@@ -436,13 +512,15 @@ public sealed class MainForm : Form
                     vendor = VendorFromMac(mac);
                 }
 
-                string type = Classify(host, vendor);
+                string type = IsLocalComputerIp(ip) ? "PC / Desktop" : Classify(host, vendor);
                 var manual = GetOverride(ip, host, mac);
                 if (manual != null)
                 {
                     vendor = manual.Vendor;
                     type = manual.Type;
                 }
+
+                string group = manual?.Group ?? "";
 
                 bag.Add(new DeviceRow
                 {
@@ -451,6 +529,7 @@ public sealed class MainForm : Form
                     MAC = mac,
                     Vendor = vendor,
                     Type = type,
+                    Group = group,
                     Status = up ? "Pingable" : "No Ping",
                     LatencyMs = ms
                 });
@@ -489,11 +568,21 @@ public sealed class MainForm : Form
         string p = mac.Replace(":", "").Replace("-", "").ToUpperInvariant();
         if (p.Length < 6) return "";
 
-        string[] aruba = { "000B86","001A1E","00246C","186472","24DEC6","40E3D6","6CF37F","84D47E","94B40F","B45D50" };
-        string[] cisco = { "00000C","000142","000143","000AB7","000BFC","000C30","000D28","000D65","000E38","000E83","000F23","001007","00100B","001011","001054","00105A","00107B","0010A6","0010F6","001120","001121","00115C","001192","0011BB" };
+        string[] aruba =
+        {
+            "000B86","001A1E","00246C","001BED","204C03","24DEC6","40E3D6","482F6B",
+            "6026EF","643E8C","64D1A3","703A0E","84D47E","94B40F","988F00","A44C11",
+            "ACA31E","B01F8C","B45D50","C8B5AD","D8C7C8","E81098","F05C19","F42E7F"
+        };
+        string[] cisco =
+        {
+            "00077D","00141B","001AA1","00270D","2C3124","380E4D","40A6E8","70695A",
+            "A0ECF9","F44E05","00180A","00259E","04F8C8","08F1B3","0C7BC8","149F43",
+            "E0553A","AC17C8"
+        };
 
-        if (aruba.Any(p.StartsWith)) return "Aruba";
-        if (cisco.Any(p.StartsWith)) return "Cisco";
+        if (aruba.Any(p.StartsWith)) return "HP Aruba";
+        if (cisco.Any(p.StartsWith)) return "Cisco / Meraki";
         return "";
     }
 
@@ -506,7 +595,10 @@ public sealed class MainForm : Form
             h.Contains("aruba") || h.Contains("cisco") || h.StartsWith("ap-") || h.StartsWith("ap"))
             return "Access Point";
 
-        if (h.Contains("desktop") || h.Contains("laptop") || h.Contains("workstation") || h.Contains("pc-"))
+        if (h.Contains("desktop") || h.Contains("laptop") || h.Contains("workstation") ||
+            h.StartsWith("pc-") || h.StartsWith("win-") || h.StartsWith("ws-") ||
+            h.StartsWith("lt-") || h.StartsWith("nb-") || h.StartsWith("dt-") ||
+            h.Contains("windows"))
             return "PC / Desktop";
 
         if (h.Contains("printer") || h.Contains("xerox") || h.Contains("canon") || h.Contains("brother") ||
@@ -515,6 +607,19 @@ public sealed class MainForm : Form
             return "Other Device";
 
         return "Unknown";
+    }
+
+    private static bool IsLocalComputerIp(string ip)
+    {
+        try
+        {
+            return NetworkInterface.GetAllNetworkInterfaces()
+                .Where(n => n.OperationalStatus == OperationalStatus.Up)
+                .SelectMany(n => n.GetIPProperties().UnicastAddresses)
+                .Where(a => a.Address.AddressFamily == AddressFamily.InterNetwork)
+                .Any(a => a.Address.ToString() == ip);
+        }
+        catch { return false; }
     }
 
     private List<DeviceRow> BuildRows()
@@ -571,6 +676,7 @@ public sealed class MainForm : Form
         grids["PCs / Desktops"].DataSource = StatusFilter(all.Where(x => x.Type == "PC / Desktop")).ToList();
         grids["Other Devices"].DataSource = StatusFilter(all.Where(x => x.Type == "Other Device")).ToList();
         grids["Unknown"].DataSource = StatusFilter(all.Where(x => x.Type == "Unknown")).ToList();
+        grids["Custom Groups"].DataSource = StatusFilter(all.Where(x => !string.IsNullOrWhiteSpace(x.Group))).ToList();
         grids["Missing / Changed"].DataSource = StatusFilter(all.Where(x => !string.IsNullOrEmpty(x.Change))).ToList();
 
         UpdateCounts();
