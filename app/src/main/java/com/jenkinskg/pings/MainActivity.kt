@@ -695,8 +695,14 @@ class MainActivity:Activity(){
         edit.apply()
         devs=devs.map{
             if(it.ip==d.ip){
-                val autoVendor=vendorFromMac(it.mac)
-                it.copy(vendor=autoVendor,type=classify(it.host,autoVendor),group="")
+                var autoVendor=vendorFromMac(it.mac)
+                var autoType=classify(it.host,autoVendor)
+                val learned=getLearnedPrefix(it.mac)
+                if(learned!=null){
+                    autoVendor=learned.first
+                    autoType=learned.second
+                }
+                it.copy(vendor=autoVendor,type=autoType,group="")
             }else it
         }
         renderAll()
