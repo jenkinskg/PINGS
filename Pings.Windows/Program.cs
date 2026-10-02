@@ -791,8 +791,9 @@ public sealed class MainForm : Form
             var oldByIp = baseline.ToDictionary(x => x.IP);
             foreach (var row in rows)
             {
-                if (row.Status == "Pingable" &&
-                    (!oldByIp.TryGetValue(row.IP, out var old) || old.Status != "Pingable"))
+                oldByIp.TryGetValue(row.IP, out var old);
+
+                if (row.Status == "Pingable" && (old == null || old.Status != "Pingable"))
                 {
                     row.Change = "NEW";
                 }
