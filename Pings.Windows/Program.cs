@@ -778,7 +778,7 @@ public sealed class MainForm : Form
     private static string Csv(string value)
     {
         value ??= "";
-        return """ + value.Replace(""", """") + """;
+        return "\"" + value.Replace("\"", "\"\"") + "\"";
     }
 
     private List<DeviceRow> BuildRows()
