@@ -4,6 +4,7 @@ using System.Net.NetworkInformation;
 using System.Net.Sockets;
 using System.Runtime.InteropServices;
 using System.Text.Json;
+using System.Text;
 
 ApplicationConfiguration.Initialize();
 Application.Run(new MainForm());
@@ -54,7 +55,7 @@ public sealed class MainForm : Form
 
     public MainForm()
     {
-        Text = "PINGS Network Monitor v0.10";
+        Text = "PINGS Network Monitor v0.11";
         Width = 1360;
         Height = 820;
         MinimumSize = new Size(1050, 650);
@@ -91,8 +92,9 @@ public sealed class MainForm : Form
         var scan = new Button { Text = "Scan Now", AutoSize = true };
         var setBefore = new Button { Text = "Set Before", AutoSize = true };
         var compare = new Button { Text = "Compare Before/After", AutoSize = true };
+        var export = new Button { Text = "Export Before/After", AutoSize = true };
 
-        foreach (var b in new[] { currentSubnet, scan, setBefore, compare, pingableBtn, apBtn, nonApBtn, noPingBtn })
+        foreach (var b in new[] { currentSubnet, scan, setBefore, compare, export, pingableBtn, apBtn, nonApBtn, noPingBtn })
             StyleButton(b);
 
         scan.Font = new Font("Segoe UI Semibold", 9.5f);
@@ -107,7 +109,7 @@ public sealed class MainForm : Form
             filter,
             new Label { Text = "Repeat:", AutoSize = true, Padding = new Padding(8,8,0,0), ForeColor = Color.FromArgb(70,80,92) },
             repeat,
-            setBefore, compare,
+            setBefore, compare, export,
             pingableBtn, apBtn, nonApBtn, noPingBtn,
             summary, compareSummary
         });
@@ -154,6 +156,7 @@ public sealed class MainForm : Form
             RefreshViews();
             tabs.SelectedIndex = 7;
         };
+        export.Click += (_, _) => ExportResults();
         filter.SelectedIndexChanged += (_, _) => RefreshViews();
 
         repeat.SelectedIndexChanged += (_, _) =>
@@ -641,6 +644,141 @@ public sealed class MainForm : Form
                 .Any(a => a.Address.ToString() == ip);
         }
         catch { return false; }
+    }
+
+    private List<DeviceRow> BuildDifferenceRows()
+    {
+        var diffs = new List<DeviceRow>();
+        var oldByIp = baseline.ToDictionary(x => x.IP);
+
+        foreach (var row in current)
+        {
+            if (row.Status != "Pingable") continue;
+
+            if (!oldByIp.TryGetValue(row.IP, out var old) || old.Status != "Pingable")
+            {
+                var d = Clone(row);
+                d.Change = "NEW";
+                diffs.Add(d);
+                continue;
+            }
+
+            if (!string.Equals(old.Hostname, row.Hostname, StringComparison.OrdinalIgnoreCase) ||
+                !string.Equals(old.MAC, row.MAC, StringComparison.OrdinalIgnoreCase) ||
+                !string.Equals(old.Type, row.Type, StringComparison.OrdinalIgnoreCase) ||
+                !string.Equals(old.Group, row.Group, StringComparison.OrdinalIgnoreCase))
+            {
+                var d = Clone(row);
+                d.Change = "CHANGED";
+                diffs.Add(d);
+            }
+        }
+
+        foreach (var old in baseline.Where(x => x.Status == "Pingable"))
+        {
+            var now = current.FirstOrDefault(n => n.IP == old.IP);
+            if (now == null || now.Status != "Pingable")
+            {
+                var d = Clone(old);
+                d.Status = "Missing";
+                d.Change = "MISSING";
+                diffs.Add(d);
+            }
+        }
+
+        return diffs.OrderBy(x => IpToUInt(x.IP)).ToList();
+    }
+
+    private void ExportResults()
+    {
+        if (baseline.Count == 0)
+        {
+            MessageBox.Show("Set a Before baseline first.");
+            return;
+        }
+        if (current.Count == 0)
+        {
+            MessageBox.Show("Run an After scan first.");
+            return;
+        }
+
+        using var dialog = new SaveFileDialog
+        {
+            Title = "Export PINGS Before / After / Difference",
+            Filter = "CSV file (*.csv)|*.csv|Text file (*.txt)|*.txt",
+            DefaultExt = "csv",
+            AddExtension = true,
+            FileName = "PINGS_compare_" + DateTime.Now.ToString("yyyyMMdd_HHmmss") + ".csv"
+        };
+
+        if (dialog.ShowDialog() != DialogResult.OK) return;
+
+        var ext = Path.GetExtension(dialog.FileName).ToLowerInvariant();
+        var text = ext == ".txt" ? BuildTextExport() : BuildCsvExport();
+        File.WriteAllText(dialog.FileName, text, new UTF8Encoding(true));
+        MessageBox.Show("Export saved:\n" + dialog.FileName);
+    }
+
+    private string BuildCsvExport()
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine("Section,IP,Hostname,MAC,Vendor,Type,Group,Status,LatencyMs,Change");
+
+        void AddRows(string section, IEnumerable<DeviceRow> rows)
+        {
+            foreach (var d in rows)
+            {
+                sb.AppendLine(string.Join(",", new[]
+                {
+                    Csv(section), Csv(d.IP), Csv(d.Hostname), Csv(d.MAC), Csv(d.Vendor),
+                    Csv(d.Type), Csv(d.Group), Csv(d.Status),
+                    Csv(d.LatencyMs >= 0 ? d.LatencyMs.ToString() : ""), Csv(d.Change)
+                }));
+            }
+        }
+
+        AddRows("BEFORE", baseline);
+        AddRows("AFTER", current);
+        AddRows("DIFFERENCE", BuildDifferenceRows());
+        return sb.ToString();
+    }
+
+    private string BuildTextExport()
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine("PINGS Before / After / Difference Export");
+        sb.AppendLine("Generated: " + DateTime.Now);
+        sb.AppendLine("Subnet: " + subnet.Text);
+        sb.AppendLine();
+        sb.AppendLine($"BEFORE COUNTS: Pingable {CountPingable(baseline)}, APs {CountAPs(baseline)}, Non-APs {CountNonAPs(baseline)}, Not Responding {CountNoPing(baseline)}");
+        sb.AppendLine($"AFTER COUNTS:  Pingable {CountPingable(current)}, APs {CountAPs(current)}, Non-APs {CountNonAPs(current)}, Not Responding {CountNoPing(current)}");
+        sb.AppendLine();
+
+        void AddRows(string title, IEnumerable<DeviceRow> rows)
+        {
+            sb.AppendLine("===== " + title + " =====");
+            sb.AppendLine("IP\tHostname\tMAC\tVendor\tType\tGroup\tStatus\tLatencyMs\tChange");
+            foreach (var d in rows)
+            {
+                sb.AppendLine(string.Join("\t", new[]
+                {
+                    d.IP, d.Hostname, d.MAC, d.Vendor, d.Type, d.Group, d.Status,
+                    d.LatencyMs >= 0 ? d.LatencyMs.ToString() : "", d.Change
+                }));
+            }
+            sb.AppendLine();
+        }
+
+        AddRows("BEFORE", baseline);
+        AddRows("AFTER", current);
+        AddRows("DIFFERENCE", BuildDifferenceRows());
+        return sb.ToString();
+    }
+
+    private static string Csv(string value)
+    {
+        value ??= "";
+        return """ + value.Replace(""", """") + """;
     }
 
     private List<DeviceRow> BuildRows()
