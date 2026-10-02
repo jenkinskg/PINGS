@@ -55,7 +55,7 @@ public sealed class MainForm : Form
 
     public MainForm()
     {
-        Text = "PINGS Network Monitor v0.11";
+        Text = "PINGS Network Monitor v0.12";
         Width = 1360;
         Height = 820;
         MinimumSize = new Size(1050, 650);
@@ -153,6 +153,7 @@ public sealed class MainForm : Form
         compare.Click += (_, _) =>
         {
             compareMode = true;
+            filter.SelectedItem = "All";
             RefreshViews();
             tabs.SelectedIndex = 7;
         };
@@ -790,13 +791,16 @@ public sealed class MainForm : Form
             var oldByIp = baseline.ToDictionary(x => x.IP);
             foreach (var row in rows)
             {
-                if (row.Status == "Pingable" && !oldByIp.ContainsKey(row.IP))
+                if (row.Status == "Pingable" &&
+                    (!oldByIp.TryGetValue(row.IP, out var old) || old.Status != "Pingable"))
                 {
                     row.Change = "NEW";
                 }
-                else if (oldByIp.TryGetValue(row.IP, out var old) && row.Status == "Pingable" &&
+                else if (old != null && row.Status == "Pingable" &&
                          (!string.Equals(old.Hostname, row.Hostname, StringComparison.OrdinalIgnoreCase) ||
-                          !string.Equals(old.MAC, row.MAC, StringComparison.OrdinalIgnoreCase)))
+                          !string.Equals(old.MAC, row.MAC, StringComparison.OrdinalIgnoreCase) ||
+                          !string.Equals(old.Type, row.Type, StringComparison.OrdinalIgnoreCase) ||
+                          !string.Equals(old.Group, row.Group, StringComparison.OrdinalIgnoreCase)))
                 {
                     row.Change = "CHANGED";
                 }
@@ -850,6 +854,8 @@ public sealed class MainForm : Form
             $"Non-APs {CountNonAPs(baseline)}→{CountNonAPs(current)} | " +
             $"Not Responding {CountNoPing(baseline)}→{CountNoPing(current)}";
     }
+
+    private static string Delta(int value) => value > 0 ? "+" + value : value.ToString();
 
     private static int CountPingable(IEnumerable<DeviceRow> rows) => rows.Count(x => x.Status == "Pingable");
     private static int CountAPs(IEnumerable<DeviceRow> rows) => rows.Count(x => x.Status == "Pingable" && x.Type == "Access Point");
