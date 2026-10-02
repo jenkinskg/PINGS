@@ -5,6 +5,7 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.content.Context
+import android.content.Intent
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
@@ -51,6 +52,8 @@ class MainActivity:Activity(){
     private val pool=Executors.newFixedThreadPool(32)
     private val handler=Handler(Looper.getMainLooper())
     private var repeatMs=0L
+    private val exportRequestCode=711
+    private var pendingExportContent:String?=null
     private val prefs by lazy { getSharedPreferences("device_classifications", Context.MODE_PRIVATE) }
 
     private val repeatTask=object:Runnable{
@@ -84,7 +87,7 @@ class MainActivity:Activity(){
             setTextColor(Color.rgb(35,49,66))
         })
         header.addView(TextView(this).apply{
-            text="Network Availability Monitor • v0.10"
+            text="Network Availability Monitor • v0.11"
             textSize=12f
             setTextColor(Color.rgb(105,115,126))
         })
@@ -126,6 +129,12 @@ class MainActivity:Activity(){
             compareMode=true
             currentTab="changes"
             renderAll()
+        },buttonLp())
+        buttons.addView(actionButton("Export CSV"){
+            startExport("csv")
+        },buttonLp())
+        buttons.addView(actionButton("Export TXT"){
+            startExport("txt")
         },buttonLp())
         buttons.addView(actionButton("Classify Selected"){
             val selected=devs.filter{selectedIps.contains(it.ip)}
@@ -247,6 +256,21 @@ class MainActivity:Activity(){
         root.addView(tabScroll,LinearLayout.LayoutParams(-1,dp(54)))
         root.addView(list,LinearLayout.LayoutParams(-1,0,1f))
         setContentView(root)
+    }
+
+    override fun onActivityResult(requestCode:Int,resultCode:Int,data:Intent?){
+        super.onActivityResult(requestCode,resultCode,data)
+        if(requestCode!=exportRequestCode||resultCode!=RESULT_OK)return
+        val uri=data?.data?:return
+        val content=pendingExportContent?:return
+        try{
+            contentResolver.openOutputStream(uri)?.bufferedWriter(Charsets.UTF_8)?.use{it.write(content)}
+            Toast.makeText(this,"PINGS export saved",Toast.LENGTH_SHORT).show()
+        }catch(e:Exception){
+            Toast.makeText(this,"Export failed: "+(e.message?:"unknown error"),Toast.LENGTH_LONG).show()
+        }finally{
+            pendingExportContent=null
+        }
     }
 
     override fun onDestroy(){
@@ -556,6 +580,114 @@ class MainActivity:Activity(){
             else->"Unknown"
         }
     }
+
+    private fun buildDifferenceRows():List<Dev>{
+        val diffs=mutableListOf<Dev>()
+        val old=before.associateBy{it.ip}
+
+        for(d in devs){
+            if(!d.up)continue
+            val prior=old[d.ip]
+            if(prior==null||!prior.up){
+                diffs.add(d.copy(change="NEW"))
+            }else if(
+                prior.host!=d.host||prior.mac!=d.mac||prior.type!=d.type||prior.group!=d.group
+            ){
+                diffs.add(d.copy(change="CHANGED"))
+            }
+        }
+
+        for(prior in before.filter{it.up}){
+            val now=devs.firstOrNull{it.ip==prior.ip}
+            if(now==null||!now.up)diffs.add(prior.copy(up=false,change="MISSING"))
+        }
+
+        return diffs.sortedBy{ipNumber(it.ip)}
+    }
+
+    private fun startExport(format:String){
+        if(before.isEmpty()){
+            Toast.makeText(this,"Set a Before baseline first",Toast.LENGTH_LONG).show()
+            return
+        }
+        if(devs.isEmpty()){
+            Toast.makeText(this,"Run an After scan first",Toast.LENGTH_LONG).show()
+            return
+        }
+
+        val csv=format=="csv"
+        pendingExportContent=if(csv)buildCsvExport()else buildTextExport()
+        val stamp=java.text.SimpleDateFormat("yyyyMMdd_HHmmss",java.util.Locale.US).format(java.util.Date())
+        val intent=Intent(Intent.ACTION_CREATE_DOCUMENT).apply{
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type=if(csv)"text/csv" else "text/plain"
+            putExtra(Intent.EXTRA_TITLE,"PINGS_compare_"+stamp+"."+(if(csv)"csv" else "txt"))
+        }
+        startActivityForResult(intent,exportRequestCode)
+    }
+
+    private fun buildCsvExport():String{
+        val sb=StringBuilder()
+        sb.appendLine("Section,IP,Hostname,MAC,Vendor,Type,Group,Status,LatencyMs,Change")
+
+        fun addRows(section:String,rows:List<Dev>){
+            for(d in rows){
+                val values=listOf(
+                    section,d.ip,d.host,d.mac,d.vendor,d.type,d.group,
+                    if(d.up)"Pingable" else if(d.change=="MISSING")"Missing" else "No Ping",
+                    if(d.ms>=0)d.ms.toString() else "",
+                    d.change
+                )
+                sb.appendLine(values.joinToString(","){csv(it)})
+            }
+        }
+
+        addRows("BEFORE",before)
+        addRows("AFTER",devs)
+        addRows("DIFFERENCE",buildDifferenceRows())
+        return sb.toString()
+    }
+
+    private fun buildTextExport():String{
+        val sb=StringBuilder()
+        sb.appendLine("PINGS Before / After / Difference Export")
+        sb.appendLine("Generated: "+java.util.Date().toString())
+        sb.appendLine("Subnet: "+subnet.text.toString())
+        sb.appendLine()
+
+        fun countLine(label:String,rows:List<Dev>){
+            val ping=rows.count{it.up}
+            val aps=rows.count{it.up&&it.type=="Access Point"}
+            val nonaps=rows.count{it.up&&it.type!="Access Point"}
+            val noPing=rows.count{!it.up}
+            sb.appendLine(label+": Pingable "+ping+", APs "+aps+", Non-APs "+nonaps+", Not Responding "+noPing)
+        }
+
+        countLine("BEFORE COUNTS",before)
+        countLine("AFTER COUNTS",devs)
+        sb.appendLine()
+
+        fun addRows(title:String,rows:List<Dev>){
+            sb.appendLine("===== "+title+" =====")
+            sb.appendLine("IP\tHostname\tMAC\tVendor\tType\tGroup\tStatus\tLatencyMs\tChange")
+            for(d in rows){
+                sb.appendLine(listOf(
+                    d.ip,d.host,d.mac,d.vendor,d.type,d.group,
+                    if(d.up)"Pingable" else if(d.change=="MISSING")"Missing" else "No Ping",
+                    if(d.ms>=0)d.ms.toString() else "",
+                    d.change
+                ).joinToString("\t"))
+            }
+            sb.appendLine()
+        }
+
+        addRows("BEFORE",before)
+        addRows("AFTER",devs)
+        addRows("DIFFERENCE",buildDifferenceRows())
+        return sb.toString()
+    }
+
+    private fun csv(value:String):String="\""+value.replace("\"","\"\"")+"\""
 
     private fun buildRows():MutableList<Dev>{
         val rows=devs.map{it.copy(change="")}.toMutableList()
