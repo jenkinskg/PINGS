@@ -84,7 +84,7 @@ class MainActivity:Activity(){
             setTextColor(Color.rgb(35,49,66))
         })
         header.addView(TextView(this).apply{
-            text="Network Availability Monitor • v0.9"
+            text="Network Availability Monitor • v0.10"
             textSize=12f
             setTextColor(Color.rgb(105,115,126))
         })
@@ -515,18 +515,28 @@ class MainActivity:Activity(){
     private fun vendorFromMac(mac:String):String{
         val p=mac.replace(":","").replace("-","").uppercase()
         if(p.length<6)return ""
+
         val aruba=listOf(
-            "000B86","001A1E","00246C","001BED","204C03","24DEC6","40E3D6","482F6B",
-            "6026EF","643E8C","64D1A3","703A0E","84D47E","94B40F","988F00","A44C11",
-            "ACA31E","B01F8C","B45D50","C8B5AD","D8C7C8","E81098","F05C19","F42E7F"
+            "000B86","001A1E","00246C","204C03","24DEC6","40E3D6","482F6B",
+            "6026EF","703A0E","84D47E","94B40F","988F00","ACA31E","B01F8C",
+            "B45D50","D8C7C8","E81098","F05C19","F42E7F"
         )
+        val hpeAruba=listOf("C8B5AD")
         val cisco=listOf(
-            "00077D","00141B","001AA1","00270D","2C3124","380E4D","40A6E8","70695A",
-            "A0ECF9","F44E05","00180A","00259E","04F8C8","08F1B3","0C7BC8","149F43",
-            "E0553A","AC17C8"
+            "00077D","00141B","001AA1","00270D","2C3124","380E4D","40A6E8",
+            "70695A","A0ECF9","F44E05","A44C11"
         )
+        val meraki=listOf(
+            "00180A","08F1B3","0C7BC8","149F43","E0553D","AC17C8"
+        )
+
         if(aruba.any{p.startsWith(it)})return "HP Aruba"
-        if(cisco.any{p.startsWith(it)})return "Cisco / Meraki"
+        if(hpeAruba.any{p.startsWith(it)})return "HPE / Aruba"
+        if(meraki.any{p.startsWith(it)})return "Cisco Meraki"
+        if(cisco.any{p.startsWith(it)})return "Cisco Systems"
+        if(p.startsWith("001BED"))return "Brocade"
+        if(p.startsWith("643E8C")||p.startsWith("00259E"))return "Huawei"
+        if(p.startsWith("64D1A3"))return "Sitecom"
         return ""
     }
 
@@ -534,7 +544,9 @@ class MainActivity:Activity(){
         val h=host.lowercase()
         val v=vendor.lowercase()
         return when{
-            v.contains("aruba")||v.contains("cisco")||h.contains("aruba")||h.contains("cisco")||h.startsWith("ap-")||h.startsWith("ap")->"Access Point"
+            v.contains("aruba")||
+            h.contains("aironet")||h.contains("meraki")||h.contains("wireless-ap")||
+            h.contains("-ap")||h.startsWith("ap-")||h.startsWith("ap")||h.startsWith("wap")->"Access Point"
             h.contains("desktop")||h.contains("laptop")||h.contains("workstation")||
             h.startsWith("pc-")||h.startsWith("win-")||h.startsWith("ws-")||
             h.startsWith("lt-")||h.startsWith("nb-")||h.startsWith("dt-")||h.contains("windows")->"PC / Desktop"
