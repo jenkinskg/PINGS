@@ -87,7 +87,7 @@ class MainActivity:Activity(){
             setTextColor(Color.rgb(35,49,66))
         })
         header.addView(TextView(this).apply{
-            text="Network Availability Monitor • v0.11"
+            text="Network Availability Monitor • v0.12"
             textSize=12f
             setTextColor(Color.rgb(105,115,126))
         })
@@ -127,6 +127,7 @@ class MainActivity:Activity(){
         },buttonLp())
         buttons.addView(actionButton("Compare Before/After"){
             compareMode=true
+            filter.setSelection(0)
             currentTab="changes"
             renderAll()
         },buttonLp())
@@ -694,10 +695,10 @@ class MainActivity:Activity(){
         if(compareMode){
             val old=before.associateBy{it.ip}
             for(d in rows){
-                if(d.up&&!old.containsKey(d.ip))d.change="NEW"
-                else if(d.up&&old.containsKey(d.ip)){
-                    val prior=old[d.ip]!!
-                    if(prior.host!=d.host||prior.mac!=d.mac)d.change="CHANGED"
+                val prior=old[d.ip]
+                if(d.up&&(prior==null||!prior.up))d.change="NEW"
+                else if(d.up&&prior!=null){
+                    if(prior.host!=d.host||prior.mac!=d.mac||prior.type!=d.type||prior.group!=d.group)d.change="CHANGED"
                 }
             }
             rows.addAll(before.filter{it.up&&!devs.any{n->n.ip==it.ip&&n.up}}.map{it.copy(up=false,change="MISSING")})
@@ -748,11 +749,13 @@ class MainActivity:Activity(){
             val ba=before.count{it.up&&it.type=="Access Point"}
             val bn=before.count{it.up&&it.type!="Access Point"}
             val bno=before.count{!it.up}
-            compareCounts.text="Before → Now  •  Pingable "+bp+"→"+ping+"  •  APs "+ba+"→"+aps+"  •  Non-APs "+bn+"→"+nonaps+"  •  Not Responding "+bno+"→"+noPing
+            compareCounts.text="Before → Now  •  Pingable "+bp+"→"+ping+" ("+delta(ping-bp)+")  •  APs "+ba+"→"+aps+" ("+delta(aps-ba)+")  •  Non-APs "+bn+"→"+nonaps+" ("+delta(nonaps-bn)+")  •  Not Responding "+bno+"→"+noPing+" ("+delta(noPing-bno)+")"
         }
         styleTabButtons()
         setList(visibleRows())
     }
+
+    private fun delta(v:Int):String=if(v>0)"+"+v else v.toString()
 
     private fun setList(rows:List<Dev>){
         list.adapter=object:ArrayAdapter<Dev>(this,android.R.layout.simple_list_item_1,rows){
