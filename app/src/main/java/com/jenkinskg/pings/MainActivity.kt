@@ -169,7 +169,7 @@ class MainActivity:Activity(){
         pingBtn.setOnClickListener{filter.setSelection(1);tabHost.currentTab=0}
         apBtn.setOnClickListener{filter.setSelection(1);tabHost.currentTab=1}
         nonApBtn.setOnClickListener{filter.setSelection(1);tabHost.currentTab=2}
-        noPingBtn.setOnClickListener{filter.setSelection(2);tabHost.currentTabByTag="all"}
+        noPingBtn.setOnClickListener{filter.setSelection(2);tabHost.currentTab=0}
         countRow.addView(pingBtn,buttonLp())
         countRow.addView(apBtn,buttonLp())
         countRow.addView(nonApBtn,buttonLp())
