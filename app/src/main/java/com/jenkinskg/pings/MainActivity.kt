@@ -18,6 +18,9 @@ import java.io.File
 import java.net.Inet4Address
 import java.net.InetAddress
 import java.util.concurrent.Executors
+import com.jcraft.jsch.ChannelExec
+import com.jcraft.jsch.JSch
+import java.io.ByteArrayOutputStream
 
 data class Dev(
     val ip:String,
@@ -87,7 +90,7 @@ class MainActivity:Activity(){
             setTextColor(Color.rgb(35,49,66))
         })
         header.addView(TextView(this).apply{
-            text="Network Availability Monitor • v0.12"
+            text="Network Availability Monitor • v0.13"
             textSize=12f
             setTextColor(Color.rgb(105,115,126))
         })
@@ -136,6 +139,9 @@ class MainActivity:Activity(){
         },buttonLp())
         buttons.addView(actionButton("Export TXT"){
             startExport("txt")
+        },buttonLp())
+        buttons.addView(actionButton("Switch VLANs"){
+            showSwitchVlansDialog()
         },buttonLp())
         buttons.addView(actionButton("Classify Selected"){
             val selected=devs.filter{selectedIps.contains(it.ip)}
@@ -360,6 +366,204 @@ class MainActivity:Activity(){
             }
             b.elevation=dp(if(selected)4 else 2).toFloat()
         }
+    }
+
+    private fun showSwitchVlansDialog(){
+        val layout=LinearLayout(this).apply{
+            orientation=LinearLayout.VERTICAL
+            setPadding(dp(18),dp(8),dp(18),0)
+        }
+
+        val host=EditText(this).apply{
+            hint="Switch IP or hostname"
+            setText(defaultGateway())
+            singleLine=true
+        }
+        val port=EditText(this).apply{
+            hint="SSH port"
+            setText("22")
+            inputType=android.text.InputType.TYPE_CLASS_NUMBER
+            singleLine=true
+        }
+        val user=EditText(this).apply{
+            hint="Username"
+            singleLine=true
+        }
+        val password=EditText(this).apply{
+            hint="Password"
+            inputType=android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD
+            singleLine=true
+        }
+        val vendor=Spinner(this).apply{
+            adapter=ArrayAdapter(
+                this@MainActivity,
+                android.R.layout.simple_spinner_dropdown_item,
+                listOf("Auto","Cisco IOS / IOS-XE","Aruba CX","ArubaOS-Switch / ProCurve","Nortel / Avaya ERS")
+            )
+        }
+
+        layout.addView(host)
+        layout.addView(port)
+        layout.addView(user)
+        layout.addView(password)
+        layout.addView(TextView(this).apply{
+            text="Switch type"
+            setPadding(0,dp(8),0,0)
+        })
+        layout.addView(vendor)
+
+        val scroll=ScrollView(this).apply{addView(layout)}
+
+        android.app.AlertDialog.Builder(this)
+            .setTitle("Switch VLANs")
+            .setMessage("Enter the management IP/hostname for the switch. Credentials are used for this connection only and are not saved.")
+            .setView(scroll)
+            .setPositiveButton("Connect"){_,_->
+                val p=port.text.toString().toIntOrNull()?:22
+                loadSwitchVlans(host.text.toString().trim(),p,user.text.toString(),password.text.toString(),vendor.selectedItem.toString())
+            }
+            .setNegativeButton("Cancel",null)
+            .show()
+    }
+
+    private fun defaultGateway():String{
+        return try{
+            val cm=getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+            for(network in cm.allNetworks){
+                val lp=cm.getLinkProperties(network)?:continue
+                for(route in lp.routes){
+                    val gw=route.gateway
+                    if(route.isDefaultRoute&&gw is Inet4Address)return gw.hostAddress?:""
+                }
+            }
+            ""
+        }catch(_:Exception){""}
+    }
+
+    private fun loadSwitchVlans(host:String,port:Int,user:String,password:String,requestedVendor:String){
+        if(host.isBlank()||user.isBlank()){
+            Toast.makeText(this,"Enter switch IP/hostname and username",Toast.LENGTH_LONG).show()
+            return
+        }
+
+        Toast.makeText(this,"Connecting to "+host+"...",Toast.LENGTH_SHORT).show()
+
+        Thread{
+            try{
+                val jsch=JSch()
+                val session=jsch.getSession(user,host,port)
+                session.setPassword(password)
+                session.setConfig("StrictHostKeyChecking","no")
+                session.timeout=12000
+                session.connect(12000)
+
+                val version=runSshCommand(session,"show version")
+                val detected=detectSwitchVendor(requestedVendor,version)
+                var output=""
+                var usedCommand=""
+
+                for(cmd in vlanCommands(detected)){
+                    val candidate=runSshCommand(session,cmd)
+                    if(looksLikeUsefulVlanOutput(candidate)){
+                        output=candidate
+                        usedCommand=cmd
+                        break
+                    }
+                }
+                session.disconnect()
+
+                if(output.isBlank())throw IllegalStateException(
+                    "Connected successfully, but no supported VLAN command returned usable output."
+                )
+
+                val text=buildString{
+                    appendLine("PINGS Switch VLAN Discovery")
+                    appendLine("Switch: "+host)
+                    appendLine("Detected/selected platform: "+detected)
+                    appendLine("Command: "+usedCommand)
+                    appendLine("-".repeat(60))
+                    append(output.trimEnd())
+                }
+
+                runOnUiThread{showSwitchOutput(text)}
+            }catch(e:Exception){
+                runOnUiThread{
+                    showSwitchOutput(
+                        "ERROR: "+(e.message?:"Connection failed")+
+                        "\n\nThe account must be allowed to SSH to the switch and run read-only show commands."
+                    )
+                }
+            }
+        }.start()
+    }
+
+    private fun runSshCommand(session:com.jcraft.jsch.Session,command:String):String{
+        val channel=session.openChannel("exec") as ChannelExec
+        val err=ByteArrayOutputStream()
+        channel.setCommand(command)
+        channel.setErrStream(err)
+        val input=channel.inputStream
+        channel.connect(15000)
+        val out=input.bufferedReader().use{it.readText()}
+        while(!channel.isClosed)Thread.sleep(25)
+        channel.disconnect()
+        val errors=err.toString(Charsets.UTF_8.name())
+        return if(errors.isBlank())out else out+"\n"+errors
+    }
+
+    private fun detectSwitchVendor(requested:String,version:String):String{
+        if(requested!="Auto")return requested
+        val v=version.lowercase()
+        return when{
+            v.contains("arubaos-cx")||v.contains("aos-cx")->"Aruba CX"
+            v.contains("procurve")||v.contains("arubaos-switch")||
+                v.contains("hewlett packard enterprise")||v.contains("hp j")->"ArubaOS-Switch / ProCurve"
+            v.contains("nortel")||v.contains("avaya")||v.contains("ethernet routing switch")->"Nortel / Avaya ERS"
+            v.contains("cisco")||v.contains("ios xe")||v.contains("ios-xe")->"Cisco IOS / IOS-XE"
+            else->"Auto"
+        }
+    }
+
+    private fun vlanCommands(vendor:String):List<String>{
+        return when(vendor){
+            "Cisco IOS / IOS-XE"->listOf("show vlan brief","show vlan")
+            "Aruba CX"->listOf("show vlan")
+            "ArubaOS-Switch / ProCurve"->listOf("show vlans","show vlan")
+            "Nortel / Avaya ERS"->listOf("show vlan","show vlan basic")
+            else->listOf("show vlan brief","show vlan","show vlans","show vlan basic")
+        }
+    }
+
+    private fun looksLikeUsefulVlanOutput(text:String):Boolean{
+        if(text.isBlank())return false
+        val t=text.lowercase()
+        if(t.contains("invalid input")||t.contains("unknown command")||
+            t.contains("unrecognized command")||t.contains("incomplete command")||
+            t.contains("ambiguous command")||t.contains("command not found"))return false
+
+        return t.contains("vlan")&&
+            (t.contains("name")||t.contains("status")||t.contains("port")||t.contains("vid"))
+    }
+
+    private fun showSwitchOutput(text:String){
+        val tv=TextView(this).apply{
+            this.text=text
+            typeface=Typeface.MONOSPACE
+            textSize=12f
+            setTextIsSelectable(true)
+            setPadding(dp(14),dp(12),dp(14),dp(12))
+        }
+        val scroll=ScrollView(this).apply{addView(tv)}
+        android.app.AlertDialog.Builder(this)
+            .setTitle("Switch VLANs")
+            .setView(scroll)
+            .setPositiveButton("Close",null)
+            .setNeutralButton("Copy"){_,_->android.content.ClipboardManager::class.java.let{
+                val cb=getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                cb.setPrimaryClip(android.content.ClipData.newPlainText("PINGS VLANs",text))
+                Toast.makeText(this,"Copied",Toast.LENGTH_SHORT).show()
+            }}
+            .show()
     }
 
     private fun currentSubnet():String{
