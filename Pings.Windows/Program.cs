@@ -5,6 +5,7 @@ using System.Net.Sockets;
 using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Text;
+using Renci.SshNet;
 
 ApplicationConfiguration.Initialize();
 Application.Run(new MainForm());
@@ -55,7 +56,7 @@ public sealed class MainForm : Form
 
     public MainForm()
     {
-        Text = "PINGS Network Monitor v0.12";
+        Text = "PINGS Network Monitor v0.13";
         Width = 1360;
         Height = 820;
         MinimumSize = new Size(1050, 650);
@@ -127,6 +128,8 @@ public sealed class MainForm : Form
             tabs.TabPages.Add(page);
         }
 
+        AddSwitchVlansTab();
+
         tabs.Font = new Font("Segoe UI Semibold", 9.5f);
         tabs.Padding = new Point(14, 6);
         tabs.Appearance = TabAppearance.Normal;
@@ -176,6 +179,196 @@ public sealed class MainForm : Form
         noPingBtn.Click += (_, _) => { filter.SelectedItem = "No Ping"; tabs.SelectedIndex = 0; };
 
         Shown += (_, _) => UpdateCounts();
+    }
+
+    private void AddSwitchVlansTab()
+    {
+        var page = new TabPage("Switch VLANs") { BackColor = Color.White };
+
+        var controls = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Top,
+            Height = 92,
+            WrapContents = true,
+            Padding = new Padding(12, 10, 12, 8),
+            BackColor = Color.FromArgb(242, 245, 249)
+        };
+
+        var host = new TextBox { Width = 155 };
+        var port = new NumericUpDown { Width = 65, Minimum = 1, Maximum = 65535, Value = 22 };
+        var user = new TextBox { Width = 125 };
+        var password = new TextBox { Width = 125, UseSystemPasswordChar = true };
+        var vendor = new ComboBox { Width = 155, DropDownStyle = ComboBoxStyle.DropDownList };
+        vendor.Items.AddRange(new object[] { "Auto", "Cisco IOS / IOS-XE", "Aruba CX", "ArubaOS-Switch / ProCurve", "Nortel / Avaya ERS" });
+        vendor.SelectedIndex = 0;
+
+        var useGateway = new Button { Text = "Use Gateway", AutoSize = true };
+        var showVlans = new Button { Text = "Show VLANs", AutoSize = true };
+        var copy = new Button { Text = "Copy Output", AutoSize = true };
+        foreach (var b in new[] { useGateway, showVlans, copy }) StyleButton(b);
+
+        var output = new RichTextBox
+        {
+            Dock = DockStyle.Fill,
+            ReadOnly = true,
+            Font = new Font("Consolas", 10f),
+            BackColor = Color.White,
+            WordWrap = false
+        };
+
+        controls.Controls.AddRange(new Control[]
+        {
+            new Label { Text = "Switch IP/Host:", AutoSize = true, Padding = new Padding(0,8,0,0) }, host,
+            useGateway,
+            new Label { Text = "Port:", AutoSize = true, Padding = new Padding(4,8,0,0) }, port,
+            new Label { Text = "User:", AutoSize = true, Padding = new Padding(4,8,0,0) }, user,
+            new Label { Text = "Password:", AutoSize = true, Padding = new Padding(4,8,0,0) }, password,
+            new Label { Text = "Type:", AutoSize = true, Padding = new Padding(4,8,0,0) }, vendor,
+            showVlans, copy
+        });
+
+        useGateway.Click += (_, _) => host.Text = DefaultGateway();
+        showVlans.Click += async (_, _) =>
+            await LoadSwitchVlansAsync(host.Text.Trim(), (int)port.Value, user.Text, password.Text, vendor.Text, output, showVlans);
+        copy.Click += (_, _) =>
+        {
+            if (!string.IsNullOrWhiteSpace(output.Text))
+                Clipboard.SetText(output.Text);
+        };
+
+        page.Controls.Add(output);
+        page.Controls.Add(controls);
+        tabs.TabPages.Add(page);
+    }
+
+    private static string DefaultGateway()
+    {
+        try
+        {
+            return NetworkInterface.GetAllNetworkInterfaces()
+                .Where(n => n.OperationalStatus == OperationalStatus.Up)
+                .SelectMany(n => n.GetIPProperties().GatewayAddresses)
+                .Select(g => g.Address)
+                .FirstOrDefault(a => a.AddressFamily == AddressFamily.InterNetwork && !a.Equals(IPAddress.Any))
+                ?.ToString() ?? "";
+        }
+        catch { return ""; }
+    }
+
+    private async Task LoadSwitchVlansAsync(
+        string host, int port, string username, string password, string requestedVendor,
+        RichTextBox output, Button button)
+    {
+        if (string.IsNullOrWhiteSpace(host) || string.IsNullOrWhiteSpace(username))
+        {
+            MessageBox.Show("Enter the switch IP/hostname and username.");
+            return;
+        }
+
+        button.Enabled = false;
+        output.Text = "Connecting to " + host + "...\r\n";
+
+        try
+        {
+            var result = await Task.Run(() =>
+            {
+                using var client = new SshClient(host, port, username, password);
+                client.ConnectionInfo.Timeout = TimeSpan.FromSeconds(12);
+                client.KeepAliveInterval = TimeSpan.FromSeconds(10);
+                client.Connect();
+
+                string version = RunSshCommand(client, "show version");
+                string detected = DetectSwitchVendor(requestedVendor, version);
+                string[] commands = VlanCommands(detected);
+
+                string vlanOutput = "";
+                string usedCommand = "";
+                foreach (var cmd in commands)
+                {
+                    var candidate = RunSshCommand(client, cmd);
+                    if (LooksLikeUsefulVlanOutput(candidate))
+                    {
+                        vlanOutput = candidate;
+                        usedCommand = cmd;
+                        break;
+                    }
+                }
+
+                client.Disconnect();
+
+                if (string.IsNullOrWhiteSpace(vlanOutput))
+                    throw new InvalidOperationException("Connected successfully, but no supported VLAN command returned usable output.");
+
+                var sb = new StringBuilder();
+                sb.AppendLine("PINGS Switch VLAN Discovery");
+                sb.AppendLine("Switch: " + host);
+                sb.AppendLine("Detected/selected platform: " + detected);
+                sb.AppendLine("Command: " + usedCommand);
+                sb.AppendLine(new string('-', 72));
+                sb.AppendLine(vlanOutput.TrimEnd());
+                return sb.ToString();
+            });
+
+            output.Text = result;
+            tabs.SelectedTab = output.Parent as TabPage;
+        }
+        catch (Exception ex)
+        {
+            output.Text += "\r\nERROR: " + ex.Message +
+                "\r\n\r\nThe account must be allowed to SSH to the switch and run read-only show commands.";
+        }
+        finally
+        {
+            button.Enabled = true;
+        }
+    }
+
+    private static string RunSshCommand(SshClient client, string command)
+    {
+        using var cmd = client.CreateCommand(command);
+        cmd.CommandTimeout = TimeSpan.FromSeconds(15);
+        string result = cmd.Execute() ?? "";
+        if (!string.IsNullOrWhiteSpace(cmd.Error))
+            result += Environment.NewLine + cmd.Error;
+        return result;
+    }
+
+    private static string DetectSwitchVendor(string requested, string version)
+    {
+        if (!string.Equals(requested, "Auto", StringComparison.OrdinalIgnoreCase))
+            return requested;
+
+        string v = version.ToLowerInvariant();
+        if (v.Contains("arubaos-cx") || v.Contains("aos-cx")) return "Aruba CX";
+        if (v.Contains("procurve") || v.Contains("arubaos-switch") || v.Contains("hewlett packard enterprise") || v.Contains("hp j"))
+            return "ArubaOS-Switch / ProCurve";
+        if (v.Contains("nortel") || v.Contains("avaya") || v.Contains("ethernet routing switch"))
+            return "Nortel / Avaya ERS";
+        if (v.Contains("cisco") || v.Contains("ios xe") || v.Contains("ios-xe"))
+            return "Cisco IOS / IOS-XE";
+        return "Auto";
+    }
+
+    private static string[] VlanCommands(string vendor) => vendor switch
+    {
+        "Cisco IOS / IOS-XE" => new[] { "show vlan brief", "show vlan" },
+        "Aruba CX" => new[] { "show vlan" },
+        "ArubaOS-Switch / ProCurve" => new[] { "show vlans", "show vlan" },
+        "Nortel / Avaya ERS" => new[] { "show vlan", "show vlan basic" },
+        _ => new[] { "show vlan brief", "show vlan", "show vlans", "show vlan basic" }
+    };
+
+    private static bool LooksLikeUsefulVlanOutput(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return false;
+        string t = text.ToLowerInvariant();
+        if (t.Contains("invalid input") || t.Contains("unknown command") ||
+            t.Contains("unrecognized command") || t.Contains("incomplete command") ||
+            t.Contains("ambiguous command") || t.Contains("command not found"))
+            return false;
+
+        return t.Contains("vlan") &&
+               (t.Contains("name") || t.Contains("status") || t.Contains("port") || t.Contains("vid"));
     }
 
     private static void StyleButton(Button b)
