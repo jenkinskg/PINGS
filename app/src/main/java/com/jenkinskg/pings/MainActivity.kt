@@ -26,6 +26,7 @@ data class Dev(
     val up:Boolean,
     val ms:Long,
     val type:String,
+    val group:String="",
     var change:String=""
 )
 
@@ -46,6 +47,7 @@ class MainActivity:Activity(){
     private var devs=listOf<Dev>()
     private var before=listOf<Dev>()
     private var compareMode=false
+    private val selectedIps=linkedSetOf<String>()
     private val pool=Executors.newFixedThreadPool(32)
     private val handler=Handler(Looper.getMainLooper())
     private var repeatMs=0L
@@ -82,7 +84,7 @@ class MainActivity:Activity(){
             setTextColor(Color.rgb(35,49,66))
         })
         header.addView(TextView(this).apply{
-            text="Network Availability Monitor • v0.8"
+            text="Network Availability Monitor • v0.9"
             textSize=12f
             setTextColor(Color.rgb(105,115,126))
         })
@@ -123,6 +125,15 @@ class MainActivity:Activity(){
         buttons.addView(actionButton("Compare Before/After"){
             compareMode=true
             currentTab="changes"
+            renderAll()
+        },buttonLp())
+        buttons.addView(actionButton("Classify Selected"){
+            val selected=devs.filter{selectedIps.contains(it.ip)}
+            if(selected.isEmpty()) Toast.makeText(this,"Long-press devices to select them",Toast.LENGTH_SHORT).show()
+            else showClassificationDialog(selected)
+        },buttonLp())
+        buttons.addView(actionButton("Clear Selection"){
+            selectedIps.clear()
             renderAll()
         },buttonLp())
         actionScroll.addView(buttons)
@@ -201,6 +212,7 @@ class MainActivity:Activity(){
         addTabButton(tabRow,"pcs","PCs")
         addTabButton(tabRow,"other","Other")
         addTabButton(tabRow,"unknown","Unknown")
+        addTabButton(tabRow,"groups","Custom Groups")
         addTabButton(tabRow,"changes","Missing/Changed")
         tabScroll.addView(tabRow)
 
@@ -210,9 +222,21 @@ class MainActivity:Activity(){
             setOnItemLongClickListener{_,_,position,_->
                 val rows=visibleRows()
                 if(position in rows.indices){
-                    showClassificationDialog(rows[position])
+                    val ip=rows[position].ip
+                    if(selectedIps.contains(ip))selectedIps.remove(ip) else selectedIps.add(ip)
+                    renderAll()
                     true
                 }else false
+            }
+            setOnItemClickListener{_,_,position,_->
+                if(selectedIps.isNotEmpty()){
+                    val rows=visibleRows()
+                    if(position in rows.indices){
+                        val ip=rows[position].ip
+                        if(selectedIps.contains(ip))selectedIps.remove(ip) else selectedIps.add(ip)
+                        renderAll()
+                    }
+                }
             }
         }
 
@@ -363,13 +387,15 @@ class MainActivity:Activity(){
                     val mac=if(up)macForIp(ip)else""
                     var vendor=vendorFromMac(mac)
                     var type=classify(host,vendor)
+                    var group=""
                     val manual=getOverride(ip,host,mac)
                     if(manual!=null){
                         vendor=manual.first
                         type=manual.second
+                        group=manual.third
                     }
                     val ms=if(up)System.currentTimeMillis()-started else -1L
-                    out.add(Dev(ip,host,mac,vendor,up,ms,type))
+                    out.add(Dev(ip,host,mac,vendor,up,ms,type,group))
                 }
             }
             futures.forEach{it.get()}
@@ -407,22 +433,23 @@ class MainActivity:Activity(){
         return out
     }
 
-    private fun getOverride(ip:String,host:String,mac:String):Pair<String,String>?{
+    data class Override(val first:String,val second:String,val third:String)
+
+    private fun getOverride(ip:String,host:String,mac:String):Override?{
         for(key in candidateKeys(ip,host,mac)){
             val raw=prefs.getString(key,null)?:continue
-            val parts=raw.split("|",limit=2)
-            if(parts.size==2)return Pair(parts[0],parts[1])
+            val parts=raw.split("|")
+            if(parts.size>=2)return Override(parts[0],parts[1],if(parts.size>=3)parts[2]else"")
         }
         return null
     }
 
-    private fun saveOverride(d:Dev,vendor:String,type:String){
+    private fun saveOverride(d:Dev,vendor:String,type:String,group:String=d.group){
         val key=candidateKeys(d.ip,d.host,d.mac).firstOrNull()?:return
-        prefs.edit().putString(key,vendor+"|"+type).apply()
+        prefs.edit().putString(key,vendor+"|"+type+"|"+group).apply()
         devs=devs.map{
-            if(it.ip==d.ip)it.copy(vendor=vendor,type=type) else it
+            if(it.ip==d.ip)it.copy(vendor=vendor,type=type,group=group) else it
         }
-        renderAll()
     }
 
     private fun clearOverride(d:Dev){
@@ -432,41 +459,74 @@ class MainActivity:Activity(){
         devs=devs.map{
             if(it.ip==d.ip){
                 val autoVendor=vendorFromMac(it.mac)
-                it.copy(vendor=autoVendor,type=classify(it.host,autoVendor))
+                it.copy(vendor=autoVendor,type=classify(it.host,autoVendor),group="")
             }else it
         }
         renderAll()
     }
 
-    private fun showClassificationDialog(d:Dev){
+    private fun showClassificationDialog(items:List<Dev>){
         val choices=arrayOf(
             "Mark as HP Aruba Access Point",
-            "Mark as Cisco Access Point",
+            "Mark as Cisco / Meraki Access Point",
+            "Mark as PC / Desktop",
             "Mark as Non-AP / Other Device",
             "Mark as Unknown",
+            "Assign to Custom Group...",
+            "Clear Custom Group",
             "Clear Manual Classification"
         )
         android.app.AlertDialog.Builder(this)
-            .setTitle(d.ip+(if(d.host.isNotBlank())"  "+d.host else ""))
+            .setTitle("Classify "+items.size+" selected device"+(if(items.size==1)"" else "s"))
             .setItems(choices){_,which->
                 when(which){
-                    0->saveOverride(d,"HP Aruba","Access Point")
-                    1->saveOverride(d,"Cisco","Access Point")
-                    2->saveOverride(d,"Manual","Other Device")
-                    3->saveOverride(d,"","Unknown")
-                    4->clearOverride(d)
+                    0->items.forEach{saveOverride(it,"HP Aruba","Access Point")}
+                    1->items.forEach{saveOverride(it,"Cisco / Meraki","Access Point")}
+                    2->items.forEach{saveOverride(it,"Manual","PC / Desktop")}
+                    3->items.forEach{saveOverride(it,"Manual","Other Device")}
+                    4->items.forEach{saveOverride(it,"","Unknown")}
+                    5->promptCustomGroup(items)
+                    6->items.forEach{saveOverride(it,it.vendor,it.type,"")}
+                    7->items.forEach{clearOverride(it)}
+                }
+                if(which!=5){
+                    selectedIps.clear()
+                    renderAll()
                 }
             }
+            .show()
+    }
+
+    private fun promptCustomGroup(items:List<Dev>){
+        val input=EditText(this).apply{hint="Group name"}
+        android.app.AlertDialog.Builder(this)
+            .setTitle("Custom Group")
+            .setView(input)
+            .setPositiveButton("Save"){_,_->
+                val group=input.text.toString().trim()
+                if(group.isNotBlank())items.forEach{saveOverride(it,it.vendor,it.type,group)}
+                selectedIps.clear()
+                renderAll()
+            }
+            .setNegativeButton("Cancel",null)
             .show()
     }
 
     private fun vendorFromMac(mac:String):String{
         val p=mac.replace(":","").replace("-","").uppercase()
         if(p.length<6)return ""
-        val aruba=listOf("000B86","001A1E","00246C","186472","24DEC6","40E3D6","6CF37F","84D47E","94B40F","B45D50")
-        val cisco=listOf("00000C","000142","000143","000AB7","000BFC","000C30","000D28","000D65","000E38","000E83","000F23","001007","00100B","001011","001054","00105A","00107B","0010A6","0010F6","001120","001121","00115C","001192","0011BB")
-        if(aruba.any{p.startsWith(it)})return "Aruba"
-        if(cisco.any{p.startsWith(it)})return "Cisco"
+        val aruba=listOf(
+            "000B86","001A1E","00246C","001BED","204C03","24DEC6","40E3D6","482F6B",
+            "6026EF","643E8C","64D1A3","703A0E","84D47E","94B40F","988F00","A44C11",
+            "ACA31E","B01F8C","B45D50","C8B5AD","D8C7C8","E81098","F05C19","F42E7F"
+        )
+        val cisco=listOf(
+            "00077D","00141B","001AA1","00270D","2C3124","380E4D","40A6E8","70695A",
+            "A0ECF9","F44E05","00180A","00259E","04F8C8","08F1B3","0C7BC8","149F43",
+            "E0553A","AC17C8"
+        )
+        if(aruba.any{p.startsWith(it)})return "HP Aruba"
+        if(cisco.any{p.startsWith(it)})return "Cisco / Meraki"
         return ""
     }
 
@@ -475,7 +535,9 @@ class MainActivity:Activity(){
         val v=vendor.lowercase()
         return when{
             v.contains("aruba")||v.contains("cisco")||h.contains("aruba")||h.contains("cisco")||h.startsWith("ap-")||h.startsWith("ap")->"Access Point"
-            h.contains("desktop")||h.contains("laptop")||h.contains("workstation")||h.contains("pc-")->"PC / Desktop"
+            h.contains("desktop")||h.contains("laptop")||h.contains("workstation")||
+            h.startsWith("pc-")||h.startsWith("win-")||h.startsWith("ws-")||
+            h.startsWith("lt-")||h.startsWith("nb-")||h.startsWith("dt-")||h.contains("windows")->"PC / Desktop"
             h.contains("printer")||h.contains("xerox")||h.contains("canon")||h.contains("brother")||
             h.contains("camera")||h.contains("phone")||h.contains("iphone")||h.contains("android")||
             h.contains("switch")||h.contains("router")||h.contains("gateway")||h.contains("lantronix")->"Other Device"
@@ -515,6 +577,7 @@ class MainActivity:Activity(){
             "pcs"->all.filter{it.type=="PC / Desktop"}
             "other"->all.filter{it.type=="Other Device"}
             "unknown"->all.filter{it.type=="Unknown"}
+            "groups"->all.filter{it.group.isNotBlank()}
             "changes"->all.filter{it.change.isNotEmpty()}
             else->all
         }
@@ -560,6 +623,7 @@ class MainActivity:Activity(){
                 if(d.mac.isNotBlank())s=s+"   "+d.mac
                 if(d.vendor.isNotBlank())s=s+"   "+d.vendor
                 s=s+"   "+d.type
+                if(d.group.isNotBlank())s=s+"   ["+d.group+"]"
                 if(latency.isNotBlank())s=s+"   "+latency
                 if(d.change.isNotEmpty())s=s+"   "+d.change
 
@@ -571,8 +635,17 @@ class MainActivity:Activity(){
                 else text.setTypeface(text.typeface,Typeface.NORMAL)
 
                 view.background=GradientDrawable().apply{
-                    setColor(if(d.up)Color.rgb(224,246,228) else Color.rgb(255,229,229))
-                    setStroke(1,if(d.up)Color.rgb(186,226,194) else Color.rgb(239,194,194))
+                    val selected=selectedIps.contains(d.ip)
+                    setColor(
+                        if(selected)Color.rgb(205,225,246)
+                        else if(d.up)Color.rgb(224,246,228)
+                        else Color.rgb(255,229,229)
+                    )
+                    setStroke(1,
+                        if(selected)Color.rgb(73,125,181)
+                        else if(d.up)Color.rgb(186,226,194)
+                        else Color.rgb(239,194,194)
+                    )
                 }
                 return view
             }
