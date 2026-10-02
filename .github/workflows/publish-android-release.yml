@@ -21,10 +21,10 @@ jobs:
       - name: Build APK
         run: gradle assembleDebug
       - name: Rename APK
-        run: cp app/build/outputs/apk/debug/app-debug.apk Pings-Android-v0.11.apk
-      - name: Publish APK to v0.11
+        run: cp app/build/outputs/apk/debug/app-debug.apk Pings-Android-v0.12.apk
+      - name: Publish APK to v0.12
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v0.11
-          name: PINGS v0.11
-          files: Pings-Android-v0.11.apk
+          tag_name: v0.12
+          name: PINGS v0.12
+          files: Pings-Android-v0.12.apk
