@@ -1,0 +1,34 @@
+name: Build Annotated Source Bundle
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/build-annotated-source.yml'
+      - 'tools/make_annotated_bundle.py'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout current main for annotation tool
+        uses: actions/checkout@v4
+        with:
+          path: tooling
+
+      - name: Checkout exact PINGS v0.14 source
+        uses: actions/checkout@v4
+        with:
+          ref: v0.14
+          path: source-v0.14
+
+      - name: Generate annotated teaching bundle
+        run: |
+          python3 tooling/tools/make_annotated_bundle.py source-v0.14 PINGS-v0.14-Fully-Annotated-Source
+          zip -qr PINGS-v0.14-Fully-Annotated-Source.zip PINGS-v0.14-Fully-Annotated-Source
+
+      - name: Upload annotated source bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: PINGS-v0.14-Fully-Annotated-Source
+          path: PINGS-v0.14-Fully-Annotated-Source.zip
